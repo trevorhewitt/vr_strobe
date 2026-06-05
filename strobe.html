@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Strobe Stimulus Engine v7 - Instant GPU Noise</title>
+    <title>Strobe Stimulus Engine v7.1 - Experimental Framework</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body, html { width: 100%; height: 100%; overflow: hidden; background-color: #000; font-family: monospace; color: #fff; }
@@ -57,6 +57,13 @@
             background: rgba(0, 0, 0, 1.0); z-index: 100; display: flex;
             flex-direction: column; justify-content: center; align-items: center; 
         }
+
+        /* End of Stimulus Screen */
+        #completion-overlay {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: #000; z-index: 150; display: flex;
+            flex-direction: column; justify-content: center; align-items: center;
+        }
         
         .invisible { display: none !important; }
     </style>
@@ -65,6 +72,10 @@
 
     <div id="participant-overlay" class="invisible">
         <button type="button" id="beginBtn" class="action-btn" style="width: 220px; padding: 12px; letter-spacing: 1px; border-color: #444;">BEGIN STIMULUS</button>
+    </div>
+
+    <div id="completion-overlay" class="invisible">
+        <button type="button" id="goBackBtn" class="action-btn" style="width: 220px; padding: 12px; letter-spacing: 1px; border-color: #444;">GO BACK</button>
     </div>
 
     <canvas id="stimulusCanvas"></canvas>
@@ -109,7 +120,7 @@
                     <div><label>AMP 1</label><input type="number" id="na1" value="0.2" step="0.05" min="0" max="1"></div>
                     <div><label>AMP 2</label><input type="number" id="na2" value="0.2" step="0.05" min="0" max="1"></div>
                 </div>
-                </div>
+            </div>
 
             <div class="control-group">
                 <div class="row">
@@ -178,7 +189,6 @@
         let stimulusActivated = false;
 
         // --- Master Noise Tile (Generated Once Instantly) ---
-        // This tiny 512x512 tile replaces the entire caching system
         const tileCanvas = document.createElement('canvas');
         tileCanvas.width = 512; tileCanvas.height = 512;
         const tileCtx = tileCanvas.getContext('2d', { alpha: false });
@@ -186,21 +196,19 @@
 
         function rebuildMasterNoiseTile() {
             const w = tileCanvas.width; const h = tileCanvas.height;
-            tileCtx.fillStyle = '#808080'; // 50% gray base
+            tileCtx.fillStyle = '#808080';
             tileCtx.fillRect(0, 0, w, h);
 
             const px = state.nres; const isPerlin = state.ntype === 'perlin';
             for (let x = 0; x < w; x += px) {
                 for (let y = 0; y < h; y += px) {
                     let n = isPerlin ? (Perlin.noise(x * 0.05, y * 0.05) * 2.0 - 1.0) : (Math.random() * 2.0 - 1.0);
-                    // Store as 0-255 grayscale
                     let val = Math.floor((n + 1.0) * 127.5);
                     tileCtx.fillStyle = `rgb(${val},${val},${val})`;
                     tileCtx.fillRect(x, y, px, px);
                 }
             }
             
-            // If VR is active, push this new tile to the GPU once
             if (gl && webglNoiseTexture) {
                 gl.bindTexture(gl.TEXTURE_2D, webglNoiseTexture);
                 gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, gl.LUMINANCE, gl.UNSIGNED_BYTE, tileCanvas);
@@ -225,7 +233,9 @@
         const vrBtn = document.getElementById('vrBtn');
         const form = document.getElementById('controls-form');
         const participantOverlay = document.getElementById('participant-overlay');
+        const completionOverlay = document.getElementById('completion-overlay');
         const beginBtn = document.getElementById('beginBtn');
+        const goBackBtn = document.getElementById('goBackBtn');
 
         function loadUrlParameters() {
             const p = new URLSearchParams(window.location.search);
@@ -260,10 +270,9 @@
 
             playPauseBtn.textContent = state.playing ? 'PAUSE' : 'PLAY';
 
-            // Ensure the UI displays correctly based on 'collapsed' status
             if (state.ui === 'invisible') {
                 uiContainer.classList.add('invisible');
-                if (!stimulusActivated) {
+                if (!stimulusActivated && completionOverlay.classList.contains('invisible')) {
                     participantOverlay.classList.remove('invisible');
                 }
             } else {
@@ -293,7 +302,30 @@
             rebuildMasterNoiseTile();
         }
 
-        // --- WebGL Shaders for VR (The Fix) ---
+        // --- Completion & Routing ---
+        function triggerCompletion() {
+            state.playing = false;
+            stimulusActivated = false;
+
+            if (xrSession) {
+                xrSession.end();
+            }
+
+            if (state.ui === 'invisible') {
+                participantOverlay.classList.add('invisible');
+                completionOverlay.classList.remove('invisible');
+                ctx.fillStyle = '#000000'; 
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+            } else {
+                updateUiFromState();
+            }
+        }
+
+        goBackBtn.addEventListener('click', () => {
+            window.location.href = '/index.html';
+        });
+
+        // --- WebGL Shaders for VR ---
         function initXR() {
             if ('xr' in navigator) { navigator.xr.isSessionSupported('immersive-vr').then((supported) => { xrSupported = supported; }); }
         }
@@ -307,7 +339,6 @@
                 attribute vec2 aPos; varying vec2 vTex; 
                 void main() { gl_Position = vec4(aPos, 0.0, 1.0); vTex = (aPos + 1.0) / 2.0; }`;
             
-            // This shader applies the colors and reads the noise tile at a random offset
             const fsSource = `
                 precision highp float;
                 varying vec2 vTex;
@@ -315,7 +346,7 @@
                 uniform vec2 uNoiseOffset;
                 
                 uniform vec2 uResolution;
-                uniform float uPhase; // -1.0=black, 0.0=phase1, 1.0=phase2
+                uniform float uPhase;
                 
                 uniform vec3 uColor1; uniform float uNs1; uniform float uNa1;
                 uniform vec3 uColor2; uniform float uNs2; uniform float uNa2;
@@ -331,20 +362,14 @@
                     float noiseAmp = (uPhase < 0.5) ? uNa1 : uNa2;
 
                     if (noiseActive > 0.5 && noiseAmp > 0.0) {
-                        // Map screen UV to the 512x512 tile, applying pixel resolution scale
                         vec2 scaledUV = (gl_FragCoord.xy / max(1.0, uNRes)) / 512.0;
-                        
-                        // Sample the texture and apply the random per-frame offset
                         vec4 noiseSample = texture2D(uNoiseTile, fract(scaledUV + uNoiseOffset));
-                        
-                        // Convert 0.0->1.0 to -1.0->1.0
                         float n = (noiseSample.r * 2.0) - 1.0;
                         baseColor += vec3(n * noiseAmp);
                     }
 
                     baseColor = clamp(baseColor, 0.0, 1.0);
 
-                    // Fixation cross
                     if (uFixActive > 0.5) {
                         vec2 center = uResolution / 2.0;
                         vec2 diff = abs(gl_FragCoord.xy - center);
@@ -364,12 +389,10 @@
             positionBuffer = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
             gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, -1,1, 1,-1, 1,1]), gl.STATIC_DRAW);
 
-            // Create and upload the Master Noise Tile
             webglNoiseTexture = gl.createTexture();
             gl.bindTexture(gl.TEXTURE_2D, webglNoiseTexture);
             gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, gl.LUMINANCE, gl.UNSIGNED_BYTE, tileCanvas);
             
-            // Set it to REPEAT so the offset trick works seamlessly across screen edges
             gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
             gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
             gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
@@ -429,7 +452,7 @@
         function updateStimulusState(timestamp) {
             if (canvas.width !== window.innerWidth || canvas.height !== window.innerHeight) {
                 canvas.width = window.innerWidth; canvas.height = window.innerHeight;
-                lastPhase = -1; // Force redraw
+                lastPhase = -1; 
             }
 
             if (forceBlack || !stimulusActivated) {
@@ -446,7 +469,7 @@
             if (state.playing) {
                 runningTime += delta;
                 if (state.len > 0 && runningTime >= state.len) {
-                    cancelAnimationFrame(animId); window.location.href = window.location.origin; return;
+                    triggerCompletion(); return;
                 }
             }
 
@@ -463,7 +486,6 @@
                 ctx.fillStyle = hexColor; ctx.fillRect(0, 0, canvas.width, canvas.height);
 
                 if (useNoise && noiseAmp > 0) {
-                    // Desktop Noise Optimization: Draw the tile randomly repeating across the screen
                     ctx.globalAlpha = noiseAmp;
                     const offsetX = Math.random() * tileCanvas.width;
                     const offsetY = Math.random() * tileCanvas.height;
@@ -502,7 +524,7 @@
                 if (state.playing) {
                     runningTime += delta;
                     if (state.len > 0 && runningTime >= state.len) {
-                        xrSession.end(); return;
+                        triggerCompletion(); return;
                     }
                 }
                 const period = 1 / state.freq;
@@ -520,7 +542,6 @@
             const posAttr = gl.getAttribLocation(shaderProgram, 'aPos'); gl.enableVertexAttribArray(posAttr);
             gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer); gl.vertexAttribPointer(posAttr, 2, gl.FLOAT, false, 0, 0);
 
-            // Generate a random vector offset. This instantly randomizes the noise frame with zero mathematical overhead.
             const randomOffsetX = Math.random();
             const randomOffsetY = Math.random();
 
@@ -594,7 +615,7 @@
 
         // --- Launch ---
         loadUrlParameters();
-        rebuildMasterNoiseTile(); // Generates the 512x512 tile exactly once on startup
+        rebuildMasterNoiseTile(); 
         initXR();
         animId = requestAnimationFrame(loop);
     </script>
