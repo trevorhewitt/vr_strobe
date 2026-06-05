@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Interference Visualiser</title>
+    <title>Interference Visualiser - VR Ready</title>
     <style>
         body { margin: 0; padding: 0; background-color: #121212; color: #e0e0e0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; display: flex; height: 100vh; overflow: hidden; }
         #canvas-container { flex: 1; display: flex; justify-content: center; align-items: center; background: #000; }
@@ -24,6 +24,8 @@
         .main-actions { display: flex; gap: 10px; margin-bottom: 10px; }
         #btn-reset { background: #f44336; }
         #btn-reset:hover { background: #d32f2f; }
+        #btn-vr { background: #673ab7; display: none; }
+        #btn-vr:hover { background: #5e35b1; }
         .add-remove-btns { display: flex; gap: 10px; margin-bottom: 10px; }
         .add-remove-btns button { flex: 1; background: #2196f3; }
         .add-remove-btns button.remove { background: #f44336; }
@@ -54,10 +56,12 @@
 </head>
 <body>
 
+<!-- Participant Start Screen -->
 <div id="participant-overlay" class="invisible">
     <button type="button" id="beginBtn" class="action-btn-large">BEGIN STIMULUS</button>
 </div>
 
+<!-- Participant End Screen -->
 <div id="completion-overlay" class="invisible">
     <button type="button" id="goBackBtn" class="action-btn-large">GO BACK</button>
 </div>
@@ -67,6 +71,7 @@
 <div id="ui-container">
     <h1>Interference Shader</h1>
     <div class="main-actions">
+        <button id="btn-vr">Test VR</button>
         <button id="btn-randomise">Randomise</button>
         <button id="btn-reset">Reset</button>
     </div>
@@ -102,24 +107,64 @@ if (stimParam !== null) {
     isPlaying = false;
 }
 
-document.getElementById('beginBtn').addEventListener('click', () => {
+// --- WebXR Environment & Integration ---
+let xrSession = null;
+let xrRefSpace = null;
+let xrSupported = false;
+
+if ('xr' in navigator) {
+    navigator.xr.isSessionSupported('immersive-vr').then(supported => {
+        xrSupported = supported;
+        if (supported && !isParticipantMode) {
+            document.getElementById('btn-vr').style.display = 'block';
+        }
+    });
+}
+
+function executeStartSequence() {
     document.getElementById('participant-overlay').classList.add('invisible');
     forceBlack = true;
     
     // Strict half-second baseline alignment delay
     setTimeout(() => {
         forceBlack = false;
-        activeTime = 0; // Sync animation timeline exactly to start
+        activeTime = 0; 
         lastTime = performance.now();
         isPlaying = true;
         stimulusActivated = true;
     }, 500);
-});
+}
+
+async function startVR() {
+    if (!xrSupported) { executeStartSequence(); return; }
+    try {
+        await gl.makeXRCompatible();
+        const session = await navigator.xr.requestSession('immersive-vr', { optionalFeatures: ['local'] });
+        xrSession = session;
+        session.addEventListener('end', () => { xrSession = null; });
+        session.updateRenderState({ baseLayer: new XRWebGLLayer(session, gl) });
+        xrRefSpace = await session.requestReferenceSpace('viewer');
+        
+        executeStartSequence();
+        session.requestAnimationFrame(render);
+    } catch (e) {
+        console.warn("VR request failed", e);
+        executeStartSequence();
+    }
+}
+
+document.getElementById('beginBtn').addEventListener('click', startVR);
+document.getElementById('btn-vr').addEventListener('click', startVR);
 
 document.getElementById('goBackBtn').addEventListener('click', () => {
     window.location.href = '/index.html'; 
 });
 
+
+// --- WebGL Setup ---
+const canvas = document.getElementById('glcanvas');
+// Important: Include xrCompatible request during creation just in case
+const gl = canvas.getContext('webgl2', { xrCompatible: true }) || canvas.getContext('webgl2');
 
 // --- WebGL Shaders ---
 const vsSource = `#version 300 es
@@ -513,9 +558,6 @@ document.getElementById('btn-copy-link').onclick = () => {
 
 initFromURL(); createUI();
 
-// --- WebGL Setup ---
-const canvas = document.getElementById('glcanvas');
-const gl = canvas.getContext('webgl2');
 
 function compileShader(type, source) {
     const s = gl.createShader(type); gl.shaderSource(s, source); gl.compileShader(s);
@@ -557,24 +599,50 @@ function set3f(prog, name, x, y, z) { gl.uniform3f(gl.getUniformLocation(prog, n
 let activeTime = 0;
 let lastTime = performance.now();
 
-function render() {
+function render(timestamp, frame) {
+    // If in VR, let the xrSession handle the frame loop exclusively
+    if (xrSession && !frame) return; 
+
+    if (xrSession) {
+        xrSession.requestAnimationFrame(render);
+    } else if (isPlaying || !stimulusActivated) {
+        requestAnimationFrame(render);
+    }
+
     const now = performance.now();
     const delta = (now - lastTime) / 1000.0;
     lastTime = now;
 
-    const rect = canvas.parentNode.getBoundingClientRect();
-    if (canvas.width !== rect.width || canvas.height !== rect.height) {
-        canvas.width = rect.width; canvas.height = rect.height; w = canvas.width; h = canvas.height;
+    // Check routing target and establish render boundaries
+    let renderWidth = canvas.width;
+    let renderHeight = canvas.height;
+    let targetFramebuffer = null;
+
+    if (xrSession) {
+        const layer = xrSession.renderState.baseLayer;
+        renderWidth = layer.framebufferWidth;
+        renderHeight = layer.framebufferHeight;
+        targetFramebuffer = layer.framebuffer;
+    } else {
+        const rect = canvas.parentNode.getBoundingClientRect();
+        if (canvas.width !== rect.width || canvas.height !== rect.height) {
+            canvas.width = rect.width; canvas.height = rect.height; 
+        }
+        renderWidth = canvas.width;
+        renderHeight = canvas.height;
+    }
+
+    if (w !== renderWidth || h !== renderHeight) {
+        w = renderWidth; h = renderHeight;
         mainFBO = createFBO(w, h); trailReadFBO = createFBO(w, h); trailWriteFBO = createFBO(w, h);
     }
 
     // Handle Participant Blackout Screens
     if (forceBlack || !stimulusActivated) {
-        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, targetFramebuffer);
         gl.viewport(0, 0, w, h);
         gl.clearColor(0.0, 0.0, 0.0, 1.0);
         gl.clear(gl.COLOR_BUFFER_BIT);
-        requestAnimationFrame(render);
         return;
     }
 
@@ -584,8 +652,8 @@ function render() {
         if (isParticipantMode && stimulusDuration > 0 && activeTime >= stimulusDuration) {
             isPlaying = false;
             stimulusActivated = false;
+            if (xrSession) xrSession.end();
             document.getElementById('completion-overlay').classList.remove('invisible');
-            requestAnimationFrame(render);
             return;
         }
     }
@@ -617,7 +685,8 @@ function render() {
     gl.drawArrays(gl.TRIANGLES, 0, 6);
 
     // --- Pass 3: Screen Post-Processing ---
-    gl.useProgram(progPost); gl.bindFramebuffer(gl.FRAMEBUFFER, null); setupQuad(progPost);
+    gl.useProgram(progPost); gl.bindFramebuffer(gl.FRAMEBUFFER, targetFramebuffer); setupQuad(progPost);
+    gl.viewport(0, 0, w, h);
     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, trailWriteFBO.tex); set1i(progPost, "u_image", 0);
     set2f(progPost, "u_res", w, h); set1f(progPost, "u_time", activeTime);
     set1f(progPost, "u_blurRadius", state.postProcessing.blurRadius.val); set1f(progPost, "u_glow", state.postProcessing.glowStrength.val); set1f(progPost, "u_brightness", state.postProcessing.brightness.val); set1f(progPost, "u_contrast", state.postProcessing.contrast.val);
@@ -625,10 +694,11 @@ function render() {
     gl.drawArrays(gl.TRIANGLES, 0, 6);
 
     let temp = trailReadFBO; trailReadFBO = trailWriteFBO; trailWriteFBO = temp;
-    requestAnimationFrame(render);
 }
 
-render();
+if (!isParticipantMode) {
+    requestAnimationFrame(render);
+}
 </script>
 </body>
 </html>
