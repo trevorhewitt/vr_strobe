@@ -10,31 +10,25 @@
         
         #stimulusCanvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; }
         
+        /* Blackout layer ensures the screen is black before play, but sits BEHIND the UI */
+        #blackout-layer {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background-color: #000; z-index: 5; pointer-events: none;
+        }
+
         #interface-container {
-            position: absolute;
-            top: 10px;
-            left: 10px;
-            z-index: 10;
-            background: rgba(0, 0, 0, 0.95);
-            border: 1px solid #333;
-            border-radius: 0;
-            width: 280px;
-            max-height: calc(100vh - 20px);
-            overflow-y: auto;
-            font-size: 11px;
+            position: absolute; top: 10px; left: 10px; z-index: 10;
+            background: rgba(0, 0, 0, 0.95); border: 1px solid #333;
+            width: 280px; max-height: calc(100vh - 20px); overflow-y: auto; font-size: 11px;
         }
         #interface-container.collapsed { width: auto; }
         #interface-container.collapsed #controls-form { display: none; }
         #interface-header {
-            padding: 6px 10px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            cursor: pointer;
-            user-select: none;
-            background: #111;
+            padding: 6px 10px; display: flex; justify-content: space-between;
+            align-items: center; cursor: pointer; user-select: none; background: #111;
         }
-        #interface-header h3 { font-size: 11px; color: #fff; font-weight: normal; }
+        #interface-header h3 { font-size: 11px; color: #fff; font-weight: normal; display: flex; align-items: center; gap: 8px;}
+        #ui-status { color: #888; font-size: 9px; text-transform: uppercase; }
         #toggle-btn { background: none; border: none; color: #fff; font-size: 10px; cursor: pointer; font-family: monospace; }
         
         #controls-form { padding: 10px; border-top: 1px solid #222; }
@@ -61,11 +55,11 @@
         
         .gen-section { background: #050505; border: 1px solid #1a1a1a; padding: 6px; margin-top: 6px; }
         
-        #loading-overlay {
+        /* Participant Gating Overlay (only active when UI is invisible) */
+        #participant-overlay {
             position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-            background: rgba(0, 0, 0, 1.0); z-index: 100; display: flex;
-            flex-direction: column; justify-content: center; align-items: center; 
-            font-size: 11px; letter-spacing: 2px; pointer-events: auto;
+            background: #000; z-index: 100; display: flex; flex-direction: column;
+            justify-content: center; align-items: center; font-size: 11px; letter-spacing: 2px;
         }
         
         .invisible { display: none !important; }
@@ -73,16 +67,18 @@
 </head>
 <body>
 
-    <div id="loading-overlay">
+    <div id="blackout-layer"></div>
+
+    <div id="participant-overlay" class="invisible">
         <div id="status-text">LOADING...</div>
-        <button type="button" id="beginBtn" class="action-btn invisible" style="width: 220px; padding: 12px; margin-top: 15px; letter-spacing: 1px; border-color: #444;">BEGIN STIMULUS</button>
+        <button type="button" id="beginBtn" class="action-btn invisible" style="width: 220px; padding: 12px; margin-top: 15px; border-color: #444;">BEGIN</button>
     </div>
 
     <canvas id="stimulusCanvas"></canvas>
 
     <div id="interface-container" class="collapsed">
         <div id="interface-header">
-            <h3 id="panelTitle">STROBE</h3>
+            <h3><span id="panelTitle">STROBE</span> <span id="ui-status"></span></h3>
             <button id="toggle-btn">EXPAND</button>
         </div>
         <form id="controls-form">
@@ -128,28 +124,15 @@
                     </div>
                 </div>
                 <div class="row" style="margin-top: 6px;">
-                    <div>
-                        <input type="checkbox" id="ns1"><label for="ns1" class="checkbox-label">NOISE 1</label>
-                    </div>
-                    <div>
-                        <input type="checkbox" id="ns2"><label for="ns2" class="checkbox-label">NOISE 2</label>
-                    </div>
+                    <div><input type="checkbox" id="ns1"><label for="ns1" class="checkbox-label">NOISE 1</label></div>
+                    <div><input type="checkbox" id="ns2"><label for="ns2" class="checkbox-label">NOISE 2</label></div>
                 </div>
                 <div class="row" style="margin-top: 6px;">
-                    <div>
-                        <label>AMP 1</label>
-                        <input type="number" id="na1" value="0.2" step="0.05" min="0" max="1">
-                    </div>
-                    <div>
-                        <label>AMP 2</label>
-                        <input type="number" id="na2" value="0.2" step="0.05" min="0" max="1">
-                    </div>
+                    <div><label>AMP 1</label><input type="number" id="na1" value="0.2" step="0.05" min="0" max="1"></div>
+                    <div><label>AMP 2</label><input type="number" id="na2" value="0.2" step="0.05" min="0" max="1"></div>
                 </div>
                 <div class="row" style="margin-top: 6px;">
-                    <div>
-                        <label>CACHE SIZE (FRAMES)</label>
-                        <input type="number" id="cacheSize" value="30" step="1" min="2" max="120">
-                    </div>
+                    <div><label>CACHE SIZE (FRAMES)</label><input type="number" id="cacheSize" value="30" step="1" min="2" max="120"></div>
                 </div>
                 <div class="btn-stack" style="grid-template-columns: 1fr; margin-top: 6px;">
                     <button type="button" id="rebuildCacheBtn" class="action-btn">REBUILD CACHE</button>
@@ -158,26 +141,23 @@
 
             <div class="control-group">
                 <div class="row">
-                    <div style="display: flex; align-items: center;">
-                        <input type="checkbox" id="fc"><label for="fc" class="checkbox-label">FIXATION</label>
-                    </div>
-                    <div>
-                        <input type="color" id="fcc" value="#ff0000">
-                    </div>
-                    <div>
-                        <input type="number" id="fcs" value="15" min="2" max="100">
-                    </div>
+                    <div style="display: flex; align-items: center;"><input type="checkbox" id="fc"><label for="fc" class="checkbox-label">FIXATION</label></div>
+                    <div><input type="color" id="fcc" value="#ff0000"></div>
+                    <div><input type="number" id="fcs" value="15" min="2" max="100"></div>
                 </div>
             </div>
 
             <div class="control-group">
                 <label>CONTROL</label>
-                <div class="btn-stack">
+                <div class="btn-stack" style="grid-template-columns: 1fr;">
+                    <button type="button" id="vrBtn" class="action-btn" style="border-color: #555;">ENTER FULLSCREEN VR</button>
+                </div>
+                <div class="btn-stack" style="margin-top: 8px;">
                     <button type="button" id="prevFrameBtn" class="action-btn">◀ PREV</button>
                     <button type="button" id="nextFrameBtn" class="action-btn">NEXT ▶</button>
                 </div>
                 <div class="btn-stack" style="grid-template-columns: 1fr;">
-                    <button type="button" id="playPauseBtn" class="action-btn">PAUSE</button>
+                    <button type="button" id="playPauseBtn" class="action-btn">PLAY</button>
                 </div>
             </div>
 
@@ -185,20 +165,13 @@
                 <label>LINK CONFIGURATION</label>
                 <div class="gen-section">
                     <div class="row">
-                        <div>
-                            <label>LENGTH (0=INF)</label>
-                            <input type="number" id="genLen" value="0" min="0">
-                        </div>
+                        <div><label>LENGTH (0=INF)</label><input type="number" id="genLen" value="0" min="0"></div>
                     </div>
                     <div class="row" style="margin-top: 4px;">
-                        <div>
-                            <input type="checkbox" id="genPause"><label for="genPause" class="checkbox-label">START PAUSED</label>
-                        </div>
+                        <div><input type="checkbox" id="genPause"><label for="genPause" class="checkbox-label">START PAUSED</label></div>
                     </div>
                     <div class="row" style="margin-top: 4px;">
-                        <div>
-                            <input type="checkbox" id="genInvisible" checked><label for="genInvisible" class="checkbox-label">HIDE MENU</label>
-                        </div>
+                        <div><input type="checkbox" id="genInvisible" checked><label for="genInvisible" class="checkbox-label">HIDE MENU</label></div>
                     </div>
                     <button type="button" id="shareBtn" class="action-btn" style="margin-top: 6px;">GENERATE & COPY LINK</button>
                 </div>
@@ -233,27 +206,19 @@
 
         let cachedFrames1 = [];
         let cachedFrames2 = [];
-        let activeIndex1 = 0;
-        let activeIndex2 = 0;
-
-        let lastPhase = -1;
-        let currentPhaseGlobal = 0; // Tracked for WebGL loop
-        let lastTimestamp = null;
-        let runningTime = 0; 
-        let animId = null;
-        let isCaching = false;
+        let activeIndex1 = 0; let activeIndex2 = 0;
+        let lastPhase = -1; let currentPhaseGlobal = 0; 
+        let lastTimestamp = null; let runningTime = 0; 
+        let animId = null; let isCaching = false;
         let stimulusActivated = false; 
 
-        // --- WebXR VRAM Arrays ---
+        // --- WebXR Environment ---
         let xrSession = null;
         let gl = null;
         let xrRefSpace = null;
         let xrSupported = false;
         const glCanvas = document.createElement('canvas');
-        let positionBuffer, texCoordBuffer, shaderProgram;
-        
-        let xrTextures1 = [];
-        let xrTextures2 = [];
+        let shaderProgram, positionBuffer, texCoordBuffer;
 
         // --- DOM Hooks ---
         const canvas = document.getElementById('stimulusCanvas');
@@ -261,16 +226,21 @@
         const uiContainer = document.getElementById('interface-container');
         const uiHeader = document.getElementById('interface-header');
         const panelTitle = document.getElementById('panelTitle');
+        const uiStatus = document.getElementById('ui-status');
         const toggleBtn = document.getElementById('toggle-btn');
         const playPauseBtn = document.getElementById('playPauseBtn');
         const shareBtn = document.getElementById('shareBtn');
         const rebuildCacheBtn = document.getElementById('rebuildCacheBtn');
         const nextFrameBtn = document.getElementById('nextFrameBtn');
         const prevFrameBtn = document.getElementById('prevFrameBtn');
+        const vrBtn = document.getElementById('vrBtn');
         const form = document.getElementById('controls-form');
-        const loadingOverlay = document.getElementById('loading-overlay');
+        
+        // Participant UI Gates
+        const participantOverlay = document.getElementById('participant-overlay');
         const statusText = document.getElementById('status-text');
         const beginBtn = document.getElementById('beginBtn');
+        const blackoutLayer = document.getElementById('blackout-layer');
 
         function loadUrlParameters() {
             const p = new URLSearchParams(window.location.search);
@@ -296,59 +266,57 @@
         }
 
         function updateUiFromState() {
-            document.getElementById('c1').value = state.c1;
-            document.getElementById('c2').value = state.c2;
-            document.getElementById('freq').value = state.freq;
-            document.getElementById('duty').value = state.duty;
-            document.getElementById('ntype').value = state.ntype;
-            document.getElementById('nres').value = state.nres;
-            document.getElementById('ns1').checked = state.ns1;
-            document.getElementById('na1').value = state.na1;
-            document.getElementById('ns2').checked = state.ns2;
-            document.getElementById('na2').value = state.na2;
+            document.getElementById('c1').value = state.c1; document.getElementById('c2').value = state.c2;
+            document.getElementById('freq').value = state.freq; document.getElementById('duty').value = state.duty;
+            document.getElementById('ntype').value = state.ntype; document.getElementById('nres').value = state.nres;
+            document.getElementById('ns1').checked = state.ns1; document.getElementById('na1').value = state.na1;
+            document.getElementById('ns2').checked = state.ns2; document.getElementById('na2').value = state.na2;
             document.getElementById('cacheSize').value = state.cacheSize;
-            document.getElementById('fc').checked = state.fc;
-            document.getElementById('fcc').value = state.fcc;
+            document.getElementById('fc').checked = state.fc; document.getElementById('fcc').value = state.fcc;
             document.getElementById('fcs').value = state.fcs;
 
             playPauseBtn.textContent = state.playing ? 'PAUSE' : 'PLAY';
 
-            uiContainer.classList.remove('collapsed', 'invisible');
-            if (state.ui === 'collapsed') {
-                uiContainer.classList.add('collapsed');
-                panelTitle.textContent = "STROBE";
-                toggleBtn.textContent = 'EXPAND';
-            } else if (state.ui === 'invisible') {
+            // Is the UI visible to the user? (Researcher Mode)
+            if (state.ui === 'invisible') {
                 uiContainer.classList.add('invisible');
+                participantOverlay.classList.remove('invisible'); // Gated mode
+                if (!isCaching && cachedFrames1.length >= state.cacheSize) {
+                    statusText.classList.add('invisible');
+                    beginBtn.classList.remove('invisible');
+                } else {
+                    statusText.classList.remove('invisible');
+                    beginBtn.classList.add('invisible');
+                }
             } else {
-                panelTitle.textContent = "CONTROLS";
-                toggleBtn.textContent = 'COLLAPSE';
+                uiContainer.classList.remove('invisible');
+                participantOverlay.classList.add('invisible'); // Let researcher see parameter UI unblocked
+                
+                if (state.ui === 'collapsed') {
+                    uiContainer.classList.add('collapsed');
+                    panelTitle.textContent = "STROBE"; toggleBtn.textContent = 'EXPAND';
+                } else {
+                    panelTitle.textContent = "CONTROLS"; toggleBtn.textContent = 'COLLAPSE';
+                }
+                uiStatus.textContent = isCaching ? 'LOADING...' : '';
             }
 
-            if (!isCaching && cachedFrames1.length >= state.cacheSize) {
-                statusText.classList.add('invisible');
-                beginBtn.classList.remove('invisible');
+            // Manage the standard background blackout
+            if (stimulusActivated) {
+                blackoutLayer.classList.add('invisible');
             } else {
-                statusText.classList.remove('invisible');
-                beginBtn.classList.add('invisible');
-                loadingOverlay.classList.remove('invisible');
+                blackoutLayer.classList.remove('invisible');
             }
         }
 
         function updateStateFromUi() {
-            state.c1 = document.getElementById('c1').value;
-            state.c2 = document.getElementById('c2').value;
-            state.freq = parseFloat(document.getElementById('freq').value) || 7;
-            state.duty = parseInt(document.getElementById('duty').value, 10) || 50;
-            state.ntype = document.getElementById('ntype').value;
-            state.nres = parseInt(document.getElementById('nres').value, 10) || 1;
-            state.ns1 = document.getElementById('ns1').checked;
-            state.na1 = parseFloat(document.getElementById('na1').value) || 0;
-            state.ns2 = document.getElementById('ns2').checked;
-            state.na2 = parseFloat(document.getElementById('na2').value) || 0;
+            state.c1 = document.getElementById('c1').value; state.c2 = document.getElementById('c2').value;
+            state.freq = parseFloat(document.getElementById('freq').value) || 7; state.duty = parseInt(document.getElementById('duty').value, 10) || 50;
+            state.ntype = document.getElementById('ntype').value; state.nres = parseInt(document.getElementById('nres').value, 10) || 1;
+            state.ns1 = document.getElementById('ns1').checked; state.na1 = parseFloat(document.getElementById('na1').value) || 0;
+            state.ns2 = document.getElementById('ns2').checked; state.na2 = parseFloat(document.getElementById('na2').value) || 0;
             state.cacheSize = parseInt(document.getElementById('cacheSize').value, 10) || 10;
-            state.fc = document.getElementById('fc').checked;
-            state.fcc = document.getElementById('fcc').value;
+            state.fc = document.getElementById('fc').checked; state.fcc = document.getElementById('fcc').value;
             state.fcs = parseInt(document.getElementById('fcs').value, 10) || 15;
         }
 
@@ -358,19 +326,13 @@
             updateUiFromState();
             
             if (canvas.width !== window.innerWidth || canvas.height !== window.innerHeight) {
-                canvas.width = window.innerWidth;
-                canvas.height = window.innerHeight;
-                forceCompleteRebuild = true; 
+                canvas.width = window.innerWidth; canvas.height = window.innerHeight; forceCompleteRebuild = true; 
             }
 
-            if (forceCompleteRebuild) {
-                cachedFrames1 = [];
-                cachedFrames2 = [];
-            }
+            if (forceCompleteRebuild) { cachedFrames1 = []; cachedFrames2 = []; }
 
             if (cachedFrames1.length > state.cacheSize) {
-                cachedFrames1.length = state.cacheSize;
-                cachedFrames2.length = state.cacheSize;
+                cachedFrames1.length = state.cacheSize; cachedFrames2.length = state.cacheSize;
             }
 
             const myCacheId = ++currentCacheId;
@@ -379,18 +341,14 @@
                 if (myCacheId !== currentCacheId) return; 
 
                 if (cachedFrames1.length >= state.cacheSize) {
-                    isCaching = false;
-                    updateUiFromState();
-                    return;
+                    isCaching = false; updateUiFromState(); return;
                 }
 
-                const fCanvas1 = document.createElement('canvas');
-                fCanvas1.width = canvas.width; fCanvas1.height = canvas.height;
+                const fCanvas1 = document.createElement('canvas'); fCanvas1.width = canvas.width; fCanvas1.height = canvas.height;
                 generateNoisePattern(fCanvas1, fCanvas1.getContext('2d', { alpha: false }), state.c1, state.ns1, state.na1);
                 cachedFrames1.push(fCanvas1);
 
-                const fCanvas2 = document.createElement('canvas');
-                fCanvas2.width = canvas.width; fCanvas2.height = canvas.height;
+                const fCanvas2 = document.createElement('canvas'); fCanvas2.width = canvas.width; fCanvas2.height = canvas.height;
                 generateNoisePattern(fCanvas2, fCanvas2.getContext('2d', { alpha: false }), state.c2, state.ns2, state.na2);
                 cachedFrames2.push(fCanvas2);
 
@@ -400,18 +358,13 @@
         }
 
         function generateNoisePattern(tCanvas, tCtx, baseColorHex, noiseEnabled, noiseAmp) {
-            const w = tCanvas.width;
-            const h = tCanvas.height;
-            tCtx.fillStyle = baseColorHex;
-            tCtx.fillRect(0, 0, w, h);
+            const w = tCanvas.width; const h = tCanvas.height;
+            tCtx.fillStyle = baseColorHex; tCtx.fillRect(0, 0, w, h);
 
             if (!noiseEnabled || noiseAmp <= 0) return;
 
-            const rBase = parseInt(baseColorHex.slice(1, 3), 16);
-            const gBase = parseInt(baseColorHex.slice(3, 5), 16);
-            const bBase = parseInt(baseColorHex.slice(5, 7), 16);
-            const px = state.nres;
-            const isPerlin = state.ntype === 'perlin';
+            const rBase = parseInt(baseColorHex.slice(1, 3), 16); const gBase = parseInt(baseColorHex.slice(3, 5), 16); const bBase = parseInt(baseColorHex.slice(5, 7), 16);
+            const px = state.nres; const isPerlin = state.ntype === 'perlin';
 
             for (let x = 0; x < w; x += px) {
                 for (let y = 0; y < h; y += px) {
@@ -420,79 +373,48 @@
                     const r = Math.min(255, Math.max(0, rBase + factor * 255));
                     const g = Math.min(255, Math.max(0, gBase + factor * 255));
                     const b = Math.min(255, Math.max(0, bBase + factor * 255));
-
-                    tCtx.fillStyle = `rgb(${Math.floor(r)},${Math.floor(g)},${Math.floor(b)})`;
-                    tCtx.fillRect(x, y, px, px);
+                    tCtx.fillStyle = `rgb(${Math.floor(r)},${Math.floor(g)},${Math.floor(b)})`; tCtx.fillRect(x, y, px, px);
                 }
             }
         }
 
         function drawFixationCross() {
             if (!state.fc) return;
-            const cx = canvas.width / 2;
-            const cy = canvas.height / 2;
-            const size = state.fcs;
-            ctx.strokeStyle = state.fcc;
-            ctx.lineWidth = 2;
-            ctx.beginPath();
+            const cx = canvas.width / 2; const cy = canvas.height / 2; const size = state.fcs;
+            ctx.strokeStyle = state.fcc; ctx.lineWidth = 2; ctx.beginPath();
             ctx.moveTo(cx - size, cy); ctx.lineTo(cx + size, cy);
-            ctx.moveTo(cx, cy - size); ctx.lineTo(cx, cy + size);
-            ctx.stroke();
+            ctx.moveTo(cx, cy - size); ctx.lineTo(cx, cy + size); ctx.stroke();
         }
 
-        // --- WebXR Hardware Binding Init ---
+        // --- Shader-Based WebXR Noise Engine ---
         function initXR() {
             if ('xr' in navigator) {
                 navigator.xr.isSessionSupported('immersive-vr').then((supported) => {
-                    xrSupported = supported;
-                    updateUiFromState();
+                    xrSupported = supported; updateUiFromState();
                 });
             }
         }
 
-        beginBtn.addEventListener('click', async () => {
+        function launchVRSession() {
             if (xrSupported) {
                 gl = glCanvas.getContext('webgl', { xrCompatible: true });
                 initWebGLShaders(gl);
                 navigator.xr.requestSession('immersive-vr', {
                     optionalFeatures: ['local']
                 }).then(onSessionStarted).catch(err => {
-                    console.warn("VR context request rejected, fallback to local frame", err);
-                    startOnboardingSequence();
+                    console.warn("VR context request rejected", err);
+                    triggerPlaySequence();
                 });
             } else {
-                startOnboardingSequence();
+                triggerPlaySequence();
             }
-        });
-
-        // --- Texture Compiler Pipeline ---
-        function createXRTexture(cvs) {
-            let t = gl.createTexture();
-            gl.bindTexture(gl.TEXTURE_2D, t);
-            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, cvs);
-            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-            // Nearest-neighbor preserves blocky pixel structure of noise/perlin parameters
-            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-            return t;
         }
 
-        function createSolidColorXRTexture(hex) {
-            const cvs = document.createElement('canvas');
-            cvs.width = 1; cvs.height = 1;
-            const ctxTemp = cvs.getContext('2d', { alpha: false });
-            ctxTemp.fillStyle = hex;
-            ctxTemp.fillRect(0, 0, 1, 1);
-            return createXRTexture(cvs);
-        }
+        beginBtn.addEventListener('click', launchVRSession);
+        vrBtn.addEventListener('click', launchVRSession);
 
         function hexToRgb(hex) {
-            return [
-                parseInt(hex.slice(1, 3), 16) / 255.0,
-                parseInt(hex.slice(3, 5), 16) / 255.0,
-                parseInt(hex.slice(5, 7), 16) / 255.0
-            ];
+            return [parseInt(hex.slice(1, 3), 16) / 255.0, parseInt(hex.slice(3, 5), 16) / 255.0, parseInt(hex.slice(5, 7), 16) / 255.0];
         }
 
         function onSessionStarted(session) {
@@ -500,120 +422,112 @@
             session.addEventListener('end', onSessionEnded);
             session.updateRenderState({ baseLayer: new XRWebGLLayer(session, gl) });
 
-            // Compile arrays directly into GPU memory to prevent runtime bottlenecks
-            xrTextures1.forEach(t => gl.deleteTexture(t));
-            xrTextures2.forEach(t => gl.deleteTexture(t));
-            
-            xrTextures1 = cachedFrames1.length > 0 ? cachedFrames1.map(createXRTexture) : [createSolidColorXRTexture(state.c1)];
-            xrTextures2 = cachedFrames2.length > 0 ? cachedFrames2.map(createXRTexture) : [createSolidColorXRTexture(state.c2)];
-
             session.requestReferenceSpace('viewer').then((refSpace) => {
                 xrRefSpace = refSpace;
-                startOnboardingSequence();
+                triggerPlaySequence();
                 session.requestAnimationFrame(xrLoop);
             });
         }
 
         function onSessionEnded() {
             xrSession = null;
-            stimulusActivated = false;
-            state.playing = false;
-            updateUiFromState();
-            animId = requestAnimationFrame(loop);
+            stimulusActivated = false; state.playing = false;
+            updateUiFromState(); animId = requestAnimationFrame(loop);
         }
 
-        function startOnboardingSequence() {
-            loadingOverlay.classList.add('invisible');
-            uiContainer.classList.add('invisible'); 
+        function triggerPlaySequence() {
+            participantOverlay.classList.add('invisible');
             
-            stimulusActivated = false;
-            state.playing = false;
+            // Blackout gate
+            stimulusActivated = false; state.playing = false; updateUiFromState();
 
             setTimeout(() => {
-                runningTime = 0; 
-                lastTimestamp = performance.now(); 
-                state.playing = true;
-                stimulusActivated = true; 
+                runningTime = 0; lastTimestamp = performance.now(); 
+                state.playing = true; stimulusActivated = true; 
                 updateUiFromState();
             }, 500);
         }
 
+        // NOISE GENERATED DIRECTLY IN GPU 
         function initWebGLShaders(gl) {
-            const vsSource = `
-                attribute vec2 aPos; 
-                attribute vec2 aTex; 
-                varying vec2 vTex; 
-                void main() { 
-                    gl_Position = vec4(aPos, 0.0, 1.0); 
-                    vTex = aTex; 
-                }`;
-            
-            // Fragment Shader directly handles Fixation Cross rendering
+            const vsSource = `attribute vec2 aPos; attribute vec2 aTex; varying vec2 vTex; void main() { gl_Position = vec4(aPos, 0.0, 1.0); vTex = aTex; }`;
             const fsSource = `
-                precision mediump float; 
-                varying vec2 vTex; 
-                uniform sampler2D uSam; 
+                precision mediump float; varying vec2 vTex; 
+                
                 uniform vec2 uResolution;
-                uniform float uFixActive;
-                uniform vec3 uFixColor;
-                uniform float uFixSize;
+                uniform float uTime;
+                uniform float uPhase; // 0.0 or 1.0
+                
+                uniform vec3 uColor1; uniform float uNs1; uniform float uNa1;
+                uniform vec3 uColor2; uniform float uNs2; uniform float uNa2;
+                uniform float uNType; // 1.0 = white, 2.0 = perlin
+                uniform float uNRes;
+                
+                uniform float uFixActive; uniform vec3 uFixColor; uniform float uFixSize;
+
+                float rand(vec2 co){ return fract(sin(dot(co.xy ,vec2(12.9898,78.233))) * 43758.5453); }
+                
+                float valueNoise(vec2 st) {
+                    vec2 i = floor(st); vec2 f = fract(st);
+                    float a = rand(i); float b = rand(i + vec2(1.0, 0.0));
+                    float c = rand(i + vec2(0.0, 1.0)); float d = rand(i + vec2(1.0, 1.0));
+                    vec2 u = f * f * (3.0 - 2.0 * f);
+                    return mix(a, b, u.x) + (c - a)* u.y * (1.0 - u.x) + (d - b) * u.x * u.y;
+                }
 
                 void main() { 
-                    vec4 color = texture2D(uSam, vTex); 
+                    vec3 baseColor = (uPhase < 0.5) ? uColor1 : uColor2;
+                    float noiseActive = (uPhase < 0.5) ? uNs1 : uNs2;
+                    float noiseAmp = (uPhase < 0.5) ? uNa1 : uNa2;
+                    vec3 finalColor = baseColor;
+                    
+                    // Hardware Math Noise (Bypasses CPU Cache completely)
+                    if (noiseActive > 0.5 && noiseAmp > 0.0) {
+                        vec2 pixelCoord = vTex * uResolution;
+                        vec2 blockCoord = floor(pixelCoord / max(1.0, uNRes));
+                        vec2 seed = blockCoord + vec2(uTime * 123.4, uTime * 567.8);
+                        
+                        float nVal = 0.0;
+                        if (uNType < 1.5) { nVal = rand(seed) * 2.0 - 1.0; } 
+                        else { nVal = valueNoise(seed * 0.1) * 2.0 - 1.0; }
+                        
+                        finalColor += vec3(nVal * noiseAmp);
+                    }
+                    finalColor = clamp(finalColor, 0.0, 1.0);
                     
                     if (uFixActive > 0.5) {
-                        vec2 fragCoord = vTex * uResolution;
-                        vec2 center = uResolution / 2.0;
+                        vec2 fragCoord = vTex * uResolution; vec2 center = uResolution / 2.0;
                         vec2 diff = abs(fragCoord - center);
-                        if ((diff.x < uFixSize && diff.y < 1.0) || (diff.y < uFixSize && diff.x < 1.0)) {
-                            color = vec4(uFixColor, 1.0);
-                        }
+                        if ((diff.x < uFixSize && diff.y < 2.0) || (diff.y < uFixSize && diff.x < 2.0)) { finalColor = uFixColor; }
                     }
-                    gl_FragColor = color; 
+                    gl_FragColor = vec4(finalColor, 1.0); 
                 }`;
 
-            const vs = gl.createShader(gl.VERTEX_SHADER);
-            gl.shaderSource(vs, vsSource); gl.compileShader(vs);
-            const fs = gl.createShader(gl.FRAGMENT_SHADER);
-            gl.shaderSource(fs, fsSource); gl.compileShader(fs);
+            const vs = gl.createShader(gl.VERTEX_SHADER); gl.shaderSource(vs, vsSource); gl.compileShader(vs);
+            const fs = gl.createShader(gl.FRAGMENT_SHADER); gl.shaderSource(fs, fsSource); gl.compileShader(fs);
 
-            shaderProgram = gl.createProgram();
-            gl.attachShader(shaderProgram, vs); gl.attachShader(shaderProgram, fs);
-            gl.linkProgram(shaderProgram);
+            shaderProgram = gl.createProgram(); gl.attachShader(shaderProgram, vs); gl.attachShader(shaderProgram, fs); gl.linkProgram(shaderProgram);
 
-            positionBuffer = gl.createBuffer();
-            gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+            positionBuffer = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
             gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, -1,1, 1,-1, 1,1]), gl.STATIC_DRAW);
-
-            texCoordBuffer = gl.createBuffer();
-            gl.bindBuffer(gl.ARRAY_BUFFER, texCoordBuffer);
+            texCoordBuffer = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, texCoordBuffer);
             gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0,1, 1,1, 0,0, 0,0, 1,1, 1,0]), gl.STATIC_DRAW);
         }
 
-        // --- Core Shared State Engine ---
-        // Added flag 'skip2DDraw' to execute strict timing progression without triggering CPU canvas ops
+        // --- Core Shared Timing Engine ---
         function updateStimulusState(timestamp, skip2DDraw = false) {
             if (!stimulusActivated) {
-                if (!skip2DDraw) {
-                    ctx.fillStyle = '#000000';
-                    ctx.fillRect(0, 0, canvas.width, canvas.height);
-                }
+                if (!skip2DDraw) { ctx.fillStyle = '#000000'; ctx.fillRect(0, 0, canvas.width, canvas.height); }
                 return;
             }
 
             if (!lastTimestamp) lastTimestamp = timestamp;
-            const delta = (timestamp - lastTimestamp) / 1000;
-            lastTimestamp = timestamp;
+            const delta = (timestamp - lastTimestamp) / 1000; lastTimestamp = timestamp;
 
             if (state.playing) {
                 runningTime += delta;
                 if (state.len > 0 && runningTime >= state.len) {
-                    if (xrSession) {
-                        xrSession.end();
-                    } else {
-                        cancelAnimationFrame(animId);
-                        window.location.href = window.location.origin;
-                    }
+                    if (xrSession) xrSession.end(); else { cancelAnimationFrame(animId); window.location.href = window.location.origin; }
                     return;
                 }
             }
@@ -622,38 +536,27 @@
             const timeInPeriod = runningTime % period;
             const dutyBoundary = (state.duty / 100) * period;
             const currentPhase = (timeInPeriod < dutyBoundary) ? 0 : 1;
-            
-            currentPhaseGlobal = currentPhase; // Export for WebGL router
+            currentPhaseGlobal = currentPhase; 
 
-            const frameAvailable1 = cachedFrames1.length > 0;
-            const frameAvailable2 = cachedFrames2.length > 0;
+            const frameAvailable1 = cachedFrames1.length > 0; const frameAvailable2 = cachedFrames2.length > 0;
 
             if (state.playing) {
                 if (currentPhase !== lastPhase) {
                     if (currentPhase === 0) {
                         activeIndex1 = frameAvailable1 ? (activeIndex1 + 1) % cachedFrames1.length : 0;
-                        if (!skip2DDraw) {
-                            if (frameAvailable1) ctx.drawImage(cachedFrames1[activeIndex1], 0, 0);
-                            else { ctx.fillStyle = state.c1; ctx.fillRect(0, 0, canvas.width, canvas.height); }
-                        }
+                        if (!skip2DDraw) { if (frameAvailable1) ctx.drawImage(cachedFrames1[activeIndex1], 0, 0); else { ctx.fillStyle = state.c1; ctx.fillRect(0, 0, canvas.width, canvas.height); } }
                     } else {
                         activeIndex2 = frameAvailable2 ? (activeIndex2 + 1) % cachedFrames2.length : 0;
-                        if (!skip2DDraw) {
-                            if (frameAvailable2) ctx.drawImage(cachedFrames2[activeIndex2], 0, 0);
-                            else { ctx.fillStyle = state.c2; ctx.fillRect(0, 0, canvas.width, canvas.height); }
-                        }
+                        if (!skip2DDraw) { if (frameAvailable2) ctx.drawImage(cachedFrames2[activeIndex2], 0, 0); else { ctx.fillStyle = state.c2; ctx.fillRect(0, 0, canvas.width, canvas.height); } }
                     }
-                    lastPhase = currentPhase;
-                    if (!skip2DDraw) drawFixationCross();
+                    lastPhase = currentPhase; if (!skip2DDraw) drawFixationCross();
                 }
             } else {
                 if (!skip2DDraw) {
                     if (currentPhase === 0) {
-                        if (frameAvailable1) ctx.drawImage(cachedFrames1[activeIndex1 % cachedFrames1.length], 0, 0);
-                        else { ctx.fillStyle = state.c1; ctx.fillRect(0, 0, canvas.width, canvas.height); }
+                        if (frameAvailable1) ctx.drawImage(cachedFrames1[activeIndex1 % cachedFrames1.length], 0, 0); else { ctx.fillStyle = state.c1; ctx.fillRect(0, 0, canvas.width, canvas.height); }
                     } else {
-                        if (frameAvailable2) ctx.drawImage(cachedFrames2[activeIndex2 % cachedFrames2.length], 0, 0);
-                        else { ctx.fillStyle = state.c2; ctx.fillRect(0, 0, canvas.width, canvas.height); }
+                        if (frameAvailable2) ctx.drawImage(cachedFrames2[activeIndex2 % cachedFrames2.length], 0, 0); else { ctx.fillStyle = state.c2; ctx.fillRect(0, 0, canvas.width, canvas.height); }
                     }
                     drawFixationCross();
                 }
@@ -671,20 +574,8 @@
             if (!xrSession) return;
             xrSession.requestAnimationFrame(xrLoop);
 
-            // Execute time step but strictly forbid 2D canvas manipulations
+            // Execute time step but forbid 2D canvas manipulations
             updateStimulusState(timestamp, true);
-
-            // Select active VRAM pointer
-            let activeTex;
-            if (!stimulusActivated) {
-                activeTex = xrTextures1[0]; // Baseline block handles darkness
-            } else if (currentPhaseGlobal === 0) {
-                activeTex = xrTextures1[activeIndex1 % xrTextures1.length];
-            } else {
-                activeTex = xrTextures2[activeIndex2 % xrTextures2.length];
-            }
-
-            gl.bindTexture(gl.TEXTURE_2D, activeTex);
 
             const layer = xrSession.renderState.baseLayer;
             gl.bindFramebuffer(gl.FRAMEBUFFER, layer.framebuffer);
@@ -692,22 +583,29 @@
 
             gl.useProgram(shaderProgram);
 
-            const posAttr = gl.getAttribLocation(shaderProgram, 'aPos');
-            gl.enableVertexAttribArray(posAttr);
-            gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
-            gl.vertexAttribPointer(posAttr, 2, gl.FLOAT, false, 0, 0);
+            const posAttr = gl.getAttribLocation(shaderProgram, 'aPos'); gl.enableVertexAttribArray(posAttr);
+            gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer); gl.vertexAttribPointer(posAttr, 2, gl.FLOAT, false, 0, 0);
 
-            const texAttr = gl.getAttribLocation(shaderProgram, 'aTex');
-            gl.enableVertexAttribArray(texAttr);
-            gl.bindBuffer(gl.ARRAY_BUFFER, texCoordBuffer);
-            gl.vertexAttribPointer(texAttr, 2, gl.FLOAT, false, 0, 0);
+            const texAttr = gl.getAttribLocation(shaderProgram, 'aTex'); gl.enableVertexAttribArray(texAttr);
+            gl.bindBuffer(gl.ARRAY_BUFFER, texCoordBuffer); gl.vertexAttribPointer(texAttr, 2, gl.FLOAT, false, 0, 0);
 
-            // Pass Fixation Parameters directly to Shader
+            // Push state direct to hardware shader
             gl.uniform2f(gl.getUniformLocation(shaderProgram, 'uResolution'), layer.framebufferWidth, layer.framebufferHeight);
+            gl.uniform1f(gl.getUniformLocation(shaderProgram, 'uTime'), runningTime);
+            gl.uniform1f(gl.getUniformLocation(shaderProgram, 'uPhase'), !stimulusActivated ? 0.0 : currentPhaseGlobal);
+            
+            const rgb1 = hexToRgb(state.c1); const rgb2 = hexToRgb(state.c2);
+            gl.uniform3f(gl.getUniformLocation(shaderProgram, 'uColor1'), !stimulusActivated ? 0.0 : rgb1[0], !stimulusActivated ? 0.0 : rgb1[1], !stimulusActivated ? 0.0 : rgb1[2]);
+            gl.uniform3f(gl.getUniformLocation(shaderProgram, 'uColor2'), rgb2[0], rgb2[1], rgb2[2]);
+            
+            gl.uniform1f(gl.getUniformLocation(shaderProgram, 'uNs1'), state.ns1 ? 1.0 : 0.0); gl.uniform1f(gl.getUniformLocation(shaderProgram, 'uNa1'), state.na1);
+            gl.uniform1f(gl.getUniformLocation(shaderProgram, 'uNs2'), state.ns2 ? 1.0 : 0.0); gl.uniform1f(gl.getUniformLocation(shaderProgram, 'uNa2'), state.na2);
+            gl.uniform1f(gl.getUniformLocation(shaderProgram, 'uNType'), state.ntype === 'white' ? 1.0 : 2.0); gl.uniform1f(gl.getUniformLocation(shaderProgram, 'uNRes'), state.nres);
+
             gl.uniform1f(gl.getUniformLocation(shaderProgram, 'uFixActive'), state.fc ? 1.0 : 0.0);
             if (state.fc) {
-                const rgb = hexToRgb(state.fcc);
-                gl.uniform3f(gl.getUniformLocation(shaderProgram, 'uFixColor'), rgb[0], rgb[1], rgb[2]);
+                const rgbF = hexToRgb(state.fcc);
+                gl.uniform3f(gl.getUniformLocation(shaderProgram, 'uFixColor'), rgbF[0], rgbF[1], rgbF[2]);
                 gl.uniform1f(gl.getUniformLocation(shaderProgram, 'uFixSize'), state.fcs);
             }
 
@@ -715,20 +613,15 @@
         }
 
         function stepFrame(direction) {
-            state.playing = false;
-            updateUiFromState();
-            
-            const period = 1 / state.freq;
-            const stepShift = (period / 2) * direction;
+            state.playing = false; updateUiFromState();
+            const period = 1 / state.freq; const stepShift = (period / 2) * direction;
             runningTime = (runningTime + stepShift + 10000) % 10000; 
             
             if (cachedFrames1.length > 0 && cachedFrames2.length > 0) {
                 if (direction > 0) {
-                    activeIndex1 = (activeIndex1 + 1) % cachedFrames1.length;
-                    activeIndex2 = (activeIndex2 + 1) % cachedFrames2.length;
+                    activeIndex1 = (activeIndex1 + 1) % cachedFrames1.length; activeIndex2 = (activeIndex2 + 1) % cachedFrames2.length;
                 } else {
-                    activeIndex1 = (activeIndex1 - 1 + cachedFrames1.length) % cachedFrames1.length;
-                    activeIndex2 = (activeIndex2 - 1 + cachedFrames2.length) % cachedFrames2.length;
+                    activeIndex1 = (activeIndex1 - 1 + cachedFrames1.length) % cachedFrames1.length; activeIndex2 = (activeIndex2 - 1 + cachedFrames2.length) % cachedFrames2.length;
                 }
             }
             lastPhase = -1; 
@@ -740,27 +633,16 @@
             const targetInvisible = document.getElementById('genInvisible').checked;
 
             const params = new URLSearchParams();
-            params.set('c1', state.c1.replace('#', ''));
-            params.set('c2', state.c2.replace('#', ''));
-            params.set('freq', state.freq);
-            params.set('duty', state.duty);
-            params.set('ntype', state.ntype);
-            params.set('nres', state.nres);
+            params.set('c1', state.c1.replace('#', '')); params.set('c2', state.c2.replace('#', ''));
+            params.set('freq', state.freq); params.set('duty', state.duty); params.set('ntype', state.ntype); params.set('nres', state.nres);
             
             if (state.ns1) { params.set('ns1', '1'); params.set('na1', state.na1); }
             if (state.ns2) { params.set('ns2', '1'); params.set('na2', state.na2); }
-            
             params.set('cache', state.cacheSize);
             
-            if (state.fc) {
-                params.set('fc', '1');
-                params.set('fcc', state.fcc.replace('#', ''));
-                params.set('fcs', state.fcs);
-            }
+            if (state.fc) { params.set('fc', '1'); params.set('fcc', state.fcc.replace('#', '')); params.set('fcs', state.fcs); }
             
-            params.set('ui', targetInvisible ? 'invisible' : 'collapsed');
-            params.set('playing', targetPause ? '0' : '1');
-            params.set('len', targetLen);
+            params.set('ui', targetInvisible ? 'invisible' : 'collapsed'); params.set('playing', targetPause ? '0' : '1'); params.set('len', targetLen);
 
             return `${window.location.origin}${window.location.pathname}?${params.toString()}`;
         }
@@ -768,36 +650,30 @@
         // --- Event Routing ---
         uiHeader.addEventListener('click', () => {
             if (state.ui === 'invisible') return;
-            state.ui = (state.ui === 'expanded') ? 'collapsed' : 'expanded';
-            updateUiFromState();
+            state.ui = (state.ui === 'expanded') ? 'collapsed' : 'expanded'; updateUiFromState();
         });
 
         form.addEventListener('click', (e) => e.stopPropagation());
         
         form.addEventListener('change', () => {
-            const oldRes = state.nres; const oldNType = state.ntype;
-            const oldC1 = state.c1; const oldC2 = state.c2;
-            const oldNs1 = state.ns1; const oldNs2 = state.ns2;
-            const oldNa1 = state.na1; const oldNa2 = state.na2;
-            const oldCacheSize = state.cacheSize;
+            const oldRes = state.nres; const oldNType = state.ntype; const oldC1 = state.c1; const oldC2 = state.c2;
+            const oldNs1 = state.ns1; const oldNs2 = state.ns2; const oldNa1 = state.na1; const oldNa2 = state.na2; const oldCacheSize = state.cacheSize;
 
             updateStateFromUi();
 
-            if (oldRes !== state.nres || oldNType !== state.ntype || oldC1 !== state.c1 || 
-                oldC2 !== state.c2 || oldNs1 !== state.ns1 || oldNs2 !== state.ns2 || 
-                oldNa1 !== state.na1 || oldNa2 !== state.na2) {
+            if (oldRes !== state.nres || oldNType !== state.ntype || oldC1 !== state.c1 || oldC2 !== state.c2 || oldNs1 !== state.ns1 || oldNs2 !== state.ns2 || oldNa1 !== state.na1 || oldNa2 !== state.na2) {
                 synchronizeNoiseCache(true); 
-            } else if (oldCacheSize !== state.cacheSize) {
-                synchronizeNoiseCache(false); 
-            } else {
-                lastPhase = -1; 
-            }
+            } else if (oldCacheSize !== state.cacheSize) { synchronizeNoiseCache(false); } else { lastPhase = -1; }
         });
 
         rebuildCacheBtn.addEventListener('click', () => synchronizeNoiseCache(true));
+        
         playPauseBtn.addEventListener('click', () => {
-            state.playing = !state.playing;
-            playPauseBtn.textContent = state.playing ? 'PAUSE' : 'PLAY';
+            if (!stimulusActivated) {
+                triggerPlaySequence();
+            } else {
+                state.playing = !state.playing; playPauseBtn.textContent = state.playing ? 'PAUSE' : 'PLAY';
+            }
         });
 
         nextFrameBtn.addEventListener('click', () => stepFrame(1));
@@ -806,8 +682,7 @@
         shareBtn.addEventListener('click', () => {
             const link = generateCustomShareUrl();
             navigator.clipboard.writeText(link).then(() => {
-                const origText = shareBtn.textContent;
-                shareBtn.textContent = 'COPIED LINK TO CLIPBOARD!';
+                const origText = shareBtn.textContent; shareBtn.textContent = 'COPIED LINK!';
                 setTimeout(() => shareBtn.textContent = origText, 1500);
             }).catch(err => console.error('Clipboard execution failure: ', err));
         });
@@ -815,12 +690,14 @@
         window.addEventListener('keydown', (e) => {
             if (e.key === ' ') { 
                 e.preventDefault(); 
-                state.playing = !state.playing;
-                playPauseBtn.textContent = state.playing ? 'PAUSE' : 'PLAY';
+                if (!stimulusActivated) {
+                    if (state.ui !== 'invisible') triggerPlaySequence();
+                } else {
+                    state.playing = !state.playing; playPauseBtn.textContent = state.playing ? 'PAUSE' : 'PLAY';
+                }
             }
             if (e.key === 'h' || e.key === 'H') {
-                state.ui = (state.ui === 'invisible') ? 'collapsed' : 'invisible';
-                updateUiFromState();
+                state.ui = (state.ui === 'invisible') ? 'collapsed' : 'invisible'; updateUiFromState();
             }
             if (e.key === 'ArrowRight') { e.preventDefault(); stepFrame(1); }
             if (e.key === 'ArrowLeft') { e.preventDefault(); stepFrame(-1); }
