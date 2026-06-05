@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Interference Visualiser - VR Ready</title>
+    <title>Interference Visualiser - Universal VR & Desktop</title>
     <style>
         body { margin: 0; padding: 0; background-color: #121212; color: #e0e0e0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; display: flex; height: 100vh; overflow: hidden; }
         #canvas-container { flex: 1; display: flex; justify-content: center; align-items: center; background: #000; }
@@ -56,12 +56,10 @@
 </head>
 <body>
 
-<!-- Participant Start Screen -->
 <div id="participant-overlay" class="invisible">
     <button type="button" id="beginBtn" class="action-btn-large">BEGIN STIMULUS</button>
 </div>
 
-<!-- Participant End Screen -->
 <div id="completion-overlay" class="invisible">
     <button type="button" id="goBackBtn" class="action-btn-large">GO BACK</button>
 </div>
@@ -91,7 +89,7 @@
 // --- State & Routing Initialization ---
 let isParticipantMode = false;
 let stimulusDuration = 0;
-let stimulusActivated = true; // True for experimenters immediately
+let stimulusActivated = true; 
 let isPlaying = true;
 let forceBlack = false;
 
@@ -125,7 +123,6 @@ function executeStartSequence() {
     document.getElementById('participant-overlay').classList.add('invisible');
     forceBlack = true;
     
-    // Strict half-second baseline alignment delay
     setTimeout(() => {
         forceBlack = false;
         activeTime = 0; 
@@ -136,20 +133,31 @@ function executeStartSequence() {
 }
 
 async function startVR() {
-    if (!xrSupported) { executeStartSequence(); return; }
+    if (!xrSupported) { 
+        // Fallback to desktop loop if VR is not supported (e.g. Laptops)
+        executeStartSequence(); 
+        requestAnimationFrame(render);
+        return; 
+    }
+    
     try {
         await gl.makeXRCompatible();
         const session = await navigator.xr.requestSession('immersive-vr', { optionalFeatures: ['local'] });
         xrSession = session;
-        session.addEventListener('end', () => { xrSession = null; });
+        session.addEventListener('end', () => { 
+            xrSession = null; 
+            requestAnimationFrame(render); // Keep desktop alive if VR is manually exited
+        });
         session.updateRenderState({ baseLayer: new XRWebGLLayer(session, gl) });
         xrRefSpace = await session.requestReferenceSpace('viewer');
         
         executeStartSequence();
         session.requestAnimationFrame(render);
     } catch (e) {
-        console.warn("VR request failed", e);
+        // Fallback to desktop loop if user rejects VR permission or it fails to initialize
+        console.warn("VR request failed or rejected, falling back to desktop.", e);
         executeStartSequence();
+        requestAnimationFrame(render);
     }
 }
 
@@ -157,13 +165,12 @@ document.getElementById('beginBtn').addEventListener('click', startVR);
 document.getElementById('btn-vr').addEventListener('click', startVR);
 
 document.getElementById('goBackBtn').addEventListener('click', () => {
-    window.location.href = '/index.html'; 
+    window.location.href = window.location.origin; 
 });
 
 
 // --- WebGL Setup ---
 const canvas = document.getElementById('glcanvas');
-// Important: Include xrCompatible request during creation just in case
 const gl = canvas.getContext('webgl2', { xrCompatible: true }) || canvas.getContext('webgl2');
 
 // --- WebGL Shaders ---
@@ -558,7 +565,6 @@ document.getElementById('btn-copy-link').onclick = () => {
 
 initFromURL(); createUI();
 
-
 function compileShader(type, source) {
     const s = gl.createShader(type); gl.shaderSource(s, source); gl.compileShader(s);
     if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) { console.error(gl.getShaderInfoLog(s)); return null; }
@@ -600,7 +606,6 @@ let activeTime = 0;
 let lastTime = performance.now();
 
 function render(timestamp, frame) {
-    // If in VR, let the xrSession handle the frame loop exclusively
     if (xrSession && !frame) return; 
 
     if (xrSession) {
@@ -613,7 +618,6 @@ function render(timestamp, frame) {
     const delta = (now - lastTime) / 1000.0;
     lastTime = now;
 
-    // Check routing target and establish render boundaries
     let renderWidth = canvas.width;
     let renderHeight = canvas.height;
     let targetFramebuffer = null;
