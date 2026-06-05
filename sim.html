@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interference Visualiser</title>
+    <style>
+        body { margin: 0; padding: 0; background-color: #121212; color: #e0e0e0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; display: flex; height: 100vh; overflow: hidden; }
+        #canvas-container { flex: 1; display: flex; justify-content: center; align-items: center; background: #000; }
+        canvas { width: 100%; height: 100%; object-fit: contain; }
+        #ui-container { width: 400px; background-color: #1e1e1e; border-left: 1px solid #333; display: flex; flex-direction: column; overflow-y: auto; padding: 15px; box-sizing: border-box; }
+        h1, h2, h3 { margin-top: 0; color: #fff; }
+        h1 { font-size: 1.2rem; border-bottom: 1px solid #444; padding-bottom: 10px; margin-bottom: 15px; }
+        h2 { font-size: 1rem; margin-top: 15px; background: #2a2a2a; padding: 5px; border-radius: 4px; cursor: pointer; user-select: none; }
+        .control-group { margin-bottom: 15px; border-left: 2px solid #555; padding-left: 10px; }
+        .control-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px; font-size: 0.85rem; }
+        input[type=range] { flex: 1; margin: 0 10px; }
+        input[type=color] { border: none; padding: 0; width: 30px; height: 30px; cursor: pointer; }
+        input[type=number] { width: 55px; background: #333; color: #fff; border: 1px solid #555; border-radius: 3px; padding: 2px; font-size: 0.8rem; }
+        input[type=checkbox] { width: 18px; height: 18px; cursor: pointer; }
+        select { background: #333; color: #fff; border: 1px solid #555; border-radius: 3px; padding: 4px; }
+        button { background: #4caf50; color: white; border: none; padding: 8px 12px; cursor: pointer; border-radius: 4px; font-weight: bold; width: 100%; }
+        button:hover { background: #45a049; }
+        .main-actions { display: flex; gap: 10px; margin-bottom: 10px; }
+        #btn-reset { background: #f44336; }
+        #btn-reset:hover { background: #d32f2f; }
+        .add-remove-btns { display: flex; gap: 10px; margin-bottom: 10px; }
+        .add-remove-btns button { flex: 1; background: #2196f3; }
+        .add-remove-btns button.remove { background: #f44336; }
+        .add-remove-btns button.remove:hover { background: #d32f2f; }
+        .collapsible-content { display: none; }
+        .collapsible-content.active { display: block; }
+    </style>
+</head>
+<body>
+
+<div id="canvas-container"><canvas id="glcanvas"></canvas></div>
+
+<div id="ui-container">
+    <h1>Interference Shader</h1>
+    <div class="main-actions">
+        <button id="btn-randomise">Randomise</button>
+        <button id="btn-reset">Reset</button>
+    </div>
+    <div id="controls"></div>
+</div>
+
+<script>
+// --- WebGL Shaders ---
+
+const vsSource = `#version 300 es
+    in vec4 a_position;
+    out vec2 v_uv;
+    void main() { gl_Position = a_position; v_uv = a_position.xy; }
+`;
+
+const fsMain = `#version 300 es
+    precision highp float;
+    out vec4 fragColor;
+    in vec2 v_uv;
+
+    uniform vec2 u_resolution;
+    uniform float u_time;
+
+    // Colors & Animation
+    uniform int u_colorCount;
+    uniform vec3 u_color1; uniform vec3 u_color2; uniform vec3 u_color3;
+    uniform float u_oscActive; uniform float u_oscFreq; uniform float u_oscShape;
+
+    // Global Params
+    uniform float u_step_factor; uniform float u_scale; uniform vec2 u_shear; 
+    uniform vec2 u_offset; uniform float u_shake_amp; uniform float u_shake_freq; uniform float u_rot_speed;
+    uniform float u_vig_center; uniform float u_vig_edge; uniform float u_vig_bias;
+
+    // Structs for patterns
+    struct Stripe { float is_active; vec2 pivot; float period; float angle; float speed; float rot_speed; float extent; float strength; float d_freq; float d_amp; float d_speed; float d_par; float d_orth; float w_freq; float w_amp; float w_shape; };
+    struct Ripple { float is_active; vec2 pivot; float period; float speed; vec2 rot_pivot; float rot_speed; float noise_move; float strength; float d_freq; float d_amp; float d_speed; float d_par; float d_orth; float w_freq; float w_amp; float w_shape; };
+    struct Ray { float is_active; vec2 pivot; float period; float speed; vec2 rot_pivot; float rot_speed; float noise_move; float strength; float d_freq; float d_amp; float d_speed; float d_par; float d_orth; float w_freq; float w_amp; float w_shape; };
+    struct Perlin { float is_active; vec2 pivot; float scale; float z_speed; float z_offset; float strength; };
+
+    uniform Stripe u_stripes[8]; uniform Ripple u_ripples[8]; uniform Ray u_rays[8]; uniform Perlin u_perlins[8];
+
+    // Math Helpers
+    float mod_sin(float x) { float s = sin(x); return mix(s, sign(s), u_step_factor); }
+    vec2 rotate(vec2 p, float a, vec2 pivot) { float s = sin(a); float c = cos(a); p -= pivot; return vec2(p.x * c - p.y * s, p.x * s + p.y * c) + pivot; }
+    vec2 get_noise_offset(float seed, float amt) { return vec2(sin(u_time * 0.5 + seed) * cos(u_time * 0.3 + seed * 2.0), cos(u_time * 0.4 + seed * 3.0) * sin(u_time * 0.6 + seed * 1.5)) * amt; }
+
+    // 3D Value Noise for Distortions & Perlin Layer
+    float hash(vec3 p) {
+        p = fract(p * 0.3183099 + 0.1);
+        p *= 17.0;
+        return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+    }
+    float noise3D(vec3 x) {
+        vec3 i = floor(x); vec3 f = fract(x);
+        f = f * f * (3.0 - 2.0 * f);
+        return mix(mix(mix(hash(i + vec3(0,0,0)), hash(i + vec3(1,0,0)), f.x),
+                       mix(hash(i + vec3(0,1,0)), hash(i + vec3(1,1,0)), f.x), f.y),
+                   mix(mix(hash(i + vec3(0,0,1)), hash(i + vec3(1,0,1)), f.x),
+                       mix(hash(i + vec3(0,1,1)), hash(i + vec3(1,1,1)), f.x), f.y), f.z);
+    }
+
+    void main() {
+        vec2 uv = v_uv; uv.x *= u_resolution.x / u_resolution.y; vec2 raw_uv = uv; 
+        vec2 shake = vec2(sin(u_time * u_shake_freq), cos(u_time * u_shake_freq * 1.3)) * u_shake_amp;
+        uv += u_offset + shake; uv.x += uv.y * u_shear.x; uv.y += uv.x * u_shear.y; uv *= u_scale;
+        uv = rotate(uv, u_time * u_rot_speed, vec2(0.0));
+
+        float c_u = 0.0;
+
+        // Stripes
+        for(int i=0; i<8; i++) {
+            if(u_stripes[i].is_active < 0.5) continue;
+            vec2 p = rotate(uv, -(u_stripes[i].angle + u_time * u_stripes[i].rot_speed), u_stripes[i].pivot) - u_stripes[i].pivot;
+            if(u_stripes[i].d_amp > 0.0) {
+                float sn = noise3D(vec3(p.x * u_stripes[i].d_freq * u_stripes[i].d_par, p.y * u_stripes[i].d_freq * u_stripes[i].d_orth, u_time * u_stripes[i].d_speed)) * 2.0 - 1.0;
+                p += sn * u_stripes[i].d_amp;
+            }
+            if(u_stripes[i].w_amp > 0.0) {
+                float wp = p.y * u_stripes[i].w_freq;
+                p.x += mix(sin(wp), asin(sin(wp)) * 0.636619, u_stripes[i].w_shape) * u_stripes[i].w_amp;
+            }
+            float val = mod_sin(p.x * u_stripes[i].period - u_time * u_stripes[i].speed);
+            float fade = 1.0;
+            if(u_stripes[i].extent > 0.0) {
+                float dist = abs(p.x * u_stripes[i].period) / (3.14159 * 2.0);
+                fade = 1.0 - smoothstep(u_stripes[i].extent * 0.5, u_stripes[i].extent, dist);
+            }
+            c_u += val * fade * u_stripes[i].strength;
+        }
+
+        // Ripples
+        for(int i=0; i<8; i++) {
+            if(u_ripples[i].is_active < 0.5) continue;
+            vec2 pivot = u_ripples[i].pivot + get_noise_offset(float(i)*10.0, u_ripples[i].noise_move);
+            vec2 p = rotate(uv, -u_time * u_ripples[i].rot_speed, u_ripples[i].rot_pivot);
+            vec2 d = p - pivot;
+            float r = length(d); float a = atan(d.y, d.x);
+            if(u_ripples[i].d_amp > 0.0) {
+                float sn = noise3D(vec3(r * u_ripples[i].d_freq * u_ripples[i].d_par, a * u_ripples[i].d_freq * u_ripples[i].d_orth, u_time * u_ripples[i].d_speed)) * 2.0 - 1.0;
+                r += sn * u_ripples[i].d_amp;
+            }
+            if(u_ripples[i].w_amp > 0.0) {
+                float wp = a * u_ripples[i].w_freq;
+                r += mix(sin(wp), asin(sin(wp)) * 0.636619, u_ripples[i].w_shape) * u_ripples[i].w_amp;
+            }
+            c_u += mod_sin(r * u_ripples[i].period - u_time * u_ripples[i].speed) * u_ripples[i].strength;
+        }
+
+        // Rays
+        for(int i=0; i<8; i++) {
+            if(u_rays[i].is_active < 0.5) continue;
+            vec2 pivot = u_rays[i].pivot + get_noise_offset(float(i)*20.0, u_rays[i].noise_move);
+            vec2 p = rotate(uv, -u_time * u_rays[i].rot_speed, u_rays[i].rot_pivot);
+            vec2 d = p - pivot;
+            float r = length(d); float a = atan(d.y, d.x);
+            if(u_rays[i].d_amp > 0.0) {
+                float sn = noise3D(vec3(a * u_rays[i].d_freq * u_rays[i].d_par, r * u_rays[i].d_freq * u_rays[i].d_orth, u_time * u_rays[i].d_speed)) * 2.0 - 1.0;
+                a += sn * u_rays[i].d_amp;
+            }
+            if(u_rays[i].w_amp > 0.0) {
+                float wp = r * u_rays[i].w_freq;
+                a += mix(sin(wp), asin(sin(wp)) * 0.636619, u_rays[i].w_shape) * u_rays[i].w_amp;
+            }
+            c_u += mod_sin(a * floor(u_rays[i].period) - u_time * u_rays[i].speed) * u_rays[i].strength;
+        }
+
+        // Perlin Fields
+        for(int i=0; i<8; i++) {
+            if(u_perlins[i].is_active < 0.5) continue;
+            vec2 p = uv - u_perlins[i].pivot;
+            float val = noise3D(vec3(p * u_perlins[i].scale, u_perlins[i].z_offset + u_time * u_perlins[i].z_speed));
+            c_u += (val * 2.0 - 1.0) * u_perlins[i].strength; // Normalize 0..1 to -1..1
+        }
+
+        // Oscillation & Normalization
+        if (u_oscActive > 0.5) {
+            float osc = sin(u_time * u_oscFreq);
+            c_u = sin(c_u) * (sign(osc) * pow(abs(osc), u_oscShape)); 
+        } else {
+            c_u = sin(c_u);
+        }
+        
+        c_u = c_u * 0.5 + 0.5; // Map -1..1 to 0..1
+        if(u_vig_edge > 0.0) c_u = mix(c_u, u_vig_bias, smoothstep(u_vig_center, u_vig_edge, length(raw_uv)));
+
+        vec3 final_color = u_colorCount == 2 ? mix(u_color1, u_color2, c_u) : (c_u < 0.5 ? mix(u_color1, u_color2, c_u * 2.0) : mix(u_color2, u_color3, (c_u - 0.5) * 2.0));
+        fragColor = vec4(final_color, 1.0);
+    }
+`;
+
+const fsTrail = `#version 300 es
+    precision highp float;
+    in vec2 v_uv; out vec4 fragColor;
+    uniform sampler2D u_main; uniform sampler2D u_history; uniform float u_trail;
+    void main() {
+        vec2 tc = v_uv * 0.5 + 0.5;
+        fragColor = vec4(mix(texture(u_main, tc).rgb, texture(u_history, tc).rgb, u_trail), 1.0);
+    }
+`;
+
+const fsPost = `#version 300 es
+    precision highp float;
+    in vec2 v_uv; out vec4 fragColor;
+    uniform sampler2D u_image; uniform vec2 u_res; uniform float u_time;
+    uniform float u_blurRadius; uniform float u_glow; uniform float u_brightness; uniform float u_contrast;
+    uniform float u_noise_freq; uniform float u_noise_strength; uniform float u_noise_bias; 
+
+    float rand(vec2 co) { return fract(sin(dot(co.xy ,vec2(12.9898,78.233))) * 43758.5453); }
+
+    void main() {
+        vec2 tc = v_uv * 0.5 + 0.5;
+        vec3 color = texture(u_image, tc).rgb;
+        vec3 blur = color;
+
+        if(u_blurRadius > 0.0 || u_glow > 0.0) {
+            vec2 off = u_blurRadius / u_res;
+            blur += texture(u_image, tc + vec2(off.x, 0.0)).rgb + texture(u_image, tc + vec2(-off.x, 0.0)).rgb +
+                    texture(u_image, tc + vec2(0.0, off.y)).rgb + texture(u_image, tc + vec2(0.0, -off.y)).rgb +
+                    texture(u_image, tc + vec2(off.x, off.y)).rgb + texture(u_image, tc + vec2(-off.x, -off.y)).rgb +
+                    texture(u_image, tc + vec2(off.x, -off.y)).rgb + texture(u_image, tc + vec2(-off.x, off.y)).rgb;
+            blur /= 9.0;
+        }
+
+        if(u_blurRadius > 0.0) color = mix(color, blur, clamp(u_blurRadius, 0.0, 1.0));
+        color += max(blur - 0.5, 0.0) * u_glow;
+        color = (color - 0.5) * u_contrast + 0.5 + u_brightness;
+
+        if(u_noise_strength > 0.0) {
+            float n = rand(gl_FragCoord.xy * u_noise_freq + u_time);
+            color = mix(color, mix(color, vec3(u_noise_bias), n), u_noise_strength);
+        }
+        fragColor = vec4(color, 1.0);
+    }
+`;
+
+// --- UI Schema and State Definitions ---
+const MAX_INSTANCES = 8;
+
+const patternBase = {
+    active: { val: 1, type: 'hidden' }, strength: { val: 1, min: -2, max: 2, step: 0.1 }, period: { val: 10, min: 0.1, max: 50, step: 0.1 }, speed: { val: 2, min: -10, max: 10, step: 0.1 },
+    pivotX: { val: 0, min: -2, max: 2, step: 0.01 }, pivotY: { val: 0, min: -2, max: 2, step: 0.01 },
+    // Spatial Noise Distortions
+    distortFreq: { val: 1, min: 0, max: 20, step: 0.1 }, distortAmp: { val: 0, min: 0, max: 5, step: 0.01 }, distortSpeed: { val: 1, min: -10, max: 10, step: 0.1 }, distMultPar: { val: 1, min: 0, max: 5, step: 0.1 }, distMultOrth: { val: 1, min: 0, max: 5, step: 0.1 },
+    // Transverse Wave Distortions
+    waveFreq: { val: 2, min: 0, max: 20, step: 0.1 }, waveAmp: { val: 0, min: 0, max: 5, step: 0.01 }, waveShape: { val: 0, min: 0, max: 1, step: 0.01 } // 0 = Sine, 1 = Zigzag
+};
+
+const stripeTemplate = () => ({ ...patternBase, angle: { val: 0, min: 0, max: 6.28, step: 0.01 }, rotSpeed: { val: 0, min: -2, max: 2, step: 0.01 }, extent: { val: 0, min: 0, max: 20, step: 1 } });
+const rippleTemplate = () => ({ ...patternBase, rotPivX: { val: 0, min: -2, max: 2, step: 0.01 }, rotPivY: { val: 0, min: -2, max: 2, step: 0.01 }, rotSpeed: { val: 0, min: -2, max: 2, step: 0.01 }, noiseMove: { val: 0, min: 0, max: 2, step: 0.01 } });
+const rayTemplate = () => ({ ...patternBase, period: { val: 10, min: 1, max: 50, step: 1 }, rotPivX: { val: 0, min: -2, max: 2, step: 0.01 }, rotPivY: { val: 0, min: -2, max: 2, step: 0.01 }, rotSpeed: { val: 0, min: -2, max: 2, step: 0.01 }, noiseMove: { val: 0, min: 0, max: 2, step: 0.01 } });
+
+const perlinTemplate = () => ({
+    active: { val: 1, type: 'hidden' }, strength: { val: 1, min: -2, max: 2, step: 0.1 }, scale: { val: 5, min: 0.1, max: 50, step: 0.1 },
+    zSpeed: { val: 1, min: -10, max: 10, step: 0.1 }, zOffset: { val: 0, min: -100, max: 100, step: 0.1 },
+    pivotX: { val: 0, min: -2, max: 2, step: 0.01 }, pivotY: { val: 0, min: -2, max: 2, step: 0.01 }
+});
+
+function createDefaultState() {
+    return {
+        colors: { colorCount: { val: 2, type: 'select', options: [2, 3] }, col1: { val: '#000000', type: 'color' }, col2: { val: '#ff0000', type: 'color' }, col3: { val: '#00aaff', type: 'color' } },
+        colorAnim: { oscActive: { val: 0, type: 'boolean' }, oscFreq: { val: 0.5, min: 0, max: 40, step: 0.01 }, oscShape: { val: 1.0, min: 0.1, max: 10.0, step: 0.1 } },
+        global: { scale: { val: 2.0, min: 0.1, max: 100, step: 0.1 }, shearX: { val: 0, min: -2, max: 2, step: 0.01 }, shearY: { val: 0, min: -2, max: 2, step: 0.01 }, offsetX: { val: 0, min: -1, max: 1, step: 0.1 }, offsetY: { val: 0, min: -1, max: 1, step: 0.1 }, shakeAmp: { val: 0, min: 0, max: 0.1, step: 0.001 }, shakeFreq: { val: 5, min: 0, max: 40, step: 0.1 }, rotSpeed: { val: 0, min: -5, max: 5, step: 0.01 }, stepFactor: { val: 0, min: 0, max: 1, step: 0.01 } },
+        postProcessing: { trailAmount: { val: 0.0, min: 0, max: 0.99, step: 0.01 }, blurRadius: { val: 0.0, min: 0, max: 15.0, step: 0.1 }, glowStrength: { val: 0.0, min: 0, max: 3.0, step: 0.01 }, brightness: { val: 0.0, min: -1.0, max: 1.0, step: 0.01 }, contrast: { val: 1.0, min: 0.0, max: 3.0, step: 0.01 } },
+        effects: { noiseFreq: { val: 1, min: 0.1, max: 5, step: 0.1 }, noiseStrength: { val: 0, min: 0, max: 1, step: 0.01 }, noiseBias: { val: 0.5, min: 0, max: 1, step: 0.5 }, vigCenter: { val: 0.0, min: 0, max: 5, step: 0.01 }, vigEdge: { val: 2.0, min: 0, max: 5, step: 0.01 }, vigBias: { val: 0, min: 0, max: 1, step: 0.5 } },
+        stripes: [stripeTemplate()], ripples: [rippleTemplate()], rays: [], perlins: []
+    };
+}
+let state = createDefaultState();
+
+// --- State Serialization (URL Handling) ---
+function getStateVals() {
+    const v = { c: {}, a: {}, g: {}, p: {}, e: {}, s: [], r: [], y: [], n: [] };
+    for(let k in state.colors) v.c[k] = state.colors[k].val;
+    for(let k in state.colorAnim) v.a[k] = state.colorAnim[k].val;
+    for(let k in state.global) v.g[k] = state.global[k].val;
+    for(let k in state.postProcessing) v.p[k] = state.postProcessing[k].val;
+    for(let k in state.effects) v.e[k] = state.effects[k].val;
+    state.stripes.forEach(x => { let o={}; for(let k in x) o[k]=x[k].val; v.s.push(o); });
+    state.ripples.forEach(x => { let o={}; for(let k in x) o[k]=x[k].val; v.r.push(o); });
+    state.rays.forEach(x => { let o={}; for(let k in x) o[k]=x[k].val; v.y.push(o); });
+    state.perlins.forEach(x => { let o={}; for(let k in x) o[k]=x[k].val; v.n.push(o); });
+    return v;
+}
+
+function loadStateVals(v) {
+    if(!v) return;
+    if(v.c) for(let k in v.c) if(state.colors[k]) state.colors[k].val = v.c[k];
+    if(v.a) for(let k in v.a) if(state.colorAnim[k]) state.colorAnim[k].val = v.a[k];
+    if(v.g) for(let k in v.g) if(state.global[k]) state.global[k].val = v.g[k];
+    if(v.p) for(let k in v.p) if(state.postProcessing[k]) state.postProcessing[k].val = v.p[k];
+    if(v.e) for(let k in v.e) if(state.effects[k]) state.effects[k].val = v.e[k];
+    
+    const loadArr = (arrState, arrVals, template) => {
+        arrState.length = 0; 
+        if(arrVals) arrVals.forEach(valObj => {
+            let temp = template(); // New parameters automatically get safe defaults here!
+            for(let k in valObj) if(temp[k]) temp[k].val = valObj[k];
+            arrState.push(temp);
+        });
+    };
+    loadArr(state.stripes, v.s, stripeTemplate);
+    loadArr(state.ripples, v.r, rippleTemplate);
+    loadArr(state.rays, v.y, rayTemplate);
+    loadArr(state.perlins, v.n, perlinTemplate);
+}
+
+function updateURL() { history.replaceState(null, '', '#' + btoa(JSON.stringify(getStateVals()))); }
+function initFromURL() { if(window.location.hash) { try { loadStateVals(JSON.parse(atob(window.location.hash.slice(1)))); } catch(e) {} } else { updateURL(); } }
+
+// --- UI Generation ---
+function createUI() {
+    const root = document.getElementById('controls');
+    root.innerHTML = '';
+
+    function buildSection(title, schemaObj, isArray = false, arrayKey = null) {
+        const sec = document.createElement('div');
+        const h2 = document.createElement('h2');
+        h2.textContent = title + (isArray ? ` (${schemaObj.length}/${MAX_INSTANCES})` : '');
+        sec.appendChild(h2);
+        const content = document.createElement('div');
+        content.className = 'collapsible-content';
+        if(!isArray) content.classList.add('active'); // keep main settings open
+        h2.onclick = () => content.classList.toggle('active');
+
+        if (isArray) {
+            const btns = document.createElement('div'); btns.className = 'add-remove-btns';
+            const addBtn = document.createElement('button'); addBtn.textContent = 'Add +';
+            addBtn.onclick = () => { 
+                if (state[arrayKey].length < MAX_INSTANCES) { 
+                    const tMap = { 'stripes': stripeTemplate, 'ripples': rippleTemplate, 'rays': rayTemplate, 'perlins': perlinTemplate };
+                    state[arrayKey].push(tMap[arrayKey]()); updateURL(); createUI(); 
+                } 
+            };
+            const remBtn = document.createElement('button'); remBtn.className = 'remove'; remBtn.textContent = 'Remove -';
+            remBtn.onclick = () => { if (state[arrayKey].length > 0) { state[arrayKey].pop(); updateURL(); createUI(); } };
+            btns.append(addBtn, remBtn); content.appendChild(btns);
+
+            schemaObj.forEach((item, index) => {
+                const grp = document.createElement('div'); grp.className = 'control-group';
+                const label = document.createElement('strong'); label.textContent = `${title.slice(0, -1)} ${index + 1}`;
+                grp.appendChild(label); buildInputs(item, grp); content.appendChild(grp);
+            });
+        } else {
+            const grp = document.createElement('div'); grp.className = 'control-group';
+            buildInputs(schemaObj, grp); content.appendChild(grp);
+        }
+        sec.appendChild(content); root.appendChild(sec);
+    }
+
+    function buildInputs(obj, parent) {
+        for (const [key, prop] of Object.entries(obj)) {
+            if (prop.type === 'hidden') continue;
+            const row = document.createElement('div'); row.className = 'control-row';
+            const label = document.createElement('span'); label.textContent = key; row.appendChild(label);
+
+            if (prop.type === 'color') {
+                const inp = document.createElement('input'); inp.type = 'color'; inp.value = prop.val;
+                inp.addEventListener('input', e => { prop.val = e.target.value; updateURL(); }); row.appendChild(inp);
+            } else if (prop.type === 'boolean') {
+                const chk = document.createElement('input'); chk.type = 'checkbox'; chk.checked = prop.val === 1;
+                chk.addEventListener('change', e => { prop.val = e.target.checked ? 1 : 0; updateURL(); }); row.appendChild(chk);
+            } else if (prop.type === 'select') {
+                const sel = document.createElement('select');
+                prop.options.forEach(opt => { const o = document.createElement('option'); o.value = opt; o.textContent = opt; sel.appendChild(o); });
+                sel.value = prop.val; sel.addEventListener('change', e => { prop.val = parseInt(e.target.value); updateURL(); }); row.appendChild(sel);
+            } else {
+                const range = document.createElement('input'); range.type = 'range'; range.min = prop.min; range.max = prop.max; range.step = prop.step || 1; range.value = prop.val;
+                const num = document.createElement('input'); num.type = 'number'; num.min = prop.min; num.max = prop.max; num.step = prop.step || 1; num.value = prop.val;
+                const sync = (val) => { let v = parseFloat(val); if(!isNaN(v)){ prop.val = v; range.value = v; num.value = v; updateURL(); } };
+                range.addEventListener('input', e => sync(e.target.value)); num.addEventListener('input', e => sync(e.target.value));
+                row.append(range, num);
+            }
+            parent.appendChild(row);
+        }
+    }
+
+    buildSection('Colors', state.colors);
+    buildSection('Color Animation', state.colorAnim);
+    buildSection('Global Transforms', state.global);
+    buildSection('Post Processing', state.postProcessing);
+    buildSection('In-Shader Effects', state.effects);
+    buildSection('Perlin Fields (Noise)', state.perlins, true, 'perlins');
+    buildSection('Stripes', state.stripes, true, 'stripes');
+    buildSection('Ripples', state.ripples, true, 'ripples');
+    buildSection('Rays', state.rays, true, 'rays');
+}
+
+document.getElementById('btn-reset').onclick = () => { state = createDefaultState(); updateURL(); createUI(); };
+
+document.getElementById('btn-randomise').onclick = () => {
+    function randomizeObj(obj, category) {
+        for (const [key, prop] of Object.entries(obj)) {
+            if (prop.type === 'color') {
+                const r = Math.floor(Math.random() * 155 + 100); const g = Math.floor(Math.random() * 155 + 100); const b = Math.floor(Math.random() * 155 + 100);
+                prop.val = '#' + (1 << 24 | r << 16 | g << 8 | b).toString(16).slice(1);
+            } else if (prop.type === 'boolean') {
+                prop.val = Math.random() > 0.8 ? 1 : 0; 
+            } else if (prop.type !== 'hidden' && prop.type !== 'select') {
+                let r = prop.min + Math.random() * (prop.max - prop.min);
+                
+                // Smart Constraints to keep it visually coherent
+                if (category === 'postProcessing' && ['blurRadius', 'glowStrength', 'trailAmount'].includes(key)) r = Math.random() > 0.85 ? r : 0;
+                if (category === 'global' && ['shearX', 'shearY', 'shakeAmp'].includes(key)) r = Math.random() > 0.85 ? r : 0;
+                if (key === 'scale') r = Math.random() > 0.15 ? 0.5 + Math.random() * 4.5 : r;
+                if (category === 'effects' && ['vigEdge', 'vigCenter'].includes(key)) r = Math.random() > 0.85 ? r : prop.max;
+                if (key === 'extent') r = Math.random() > 0.85 ? r : 0;
+                // Keep distortions subtle by default
+                if (['distortAmp', 'waveAmp'].includes(key)) r = Math.random() > 0.7 ? Math.random() * 2.0 : 0;
+
+                prop.val = prop.step >= 1 ? Math.round(r) : parseFloat(r.toFixed(3));
+            }
+        }
+    }
+    
+    randomizeObj(state.global, 'global'); randomizeObj(state.effects, 'effects'); 
+    randomizeObj(state.colorAnim, 'anim'); randomizeObj(state.postProcessing, 'postProcessing'); 
+    state.stripes.forEach(s => randomizeObj(s, 'pattern')); state.ripples.forEach(r => randomizeObj(r, 'pattern')); 
+    state.rays.forEach(ry => randomizeObj(ry, 'pattern')); state.perlins.forEach(pn => randomizeObj(pn, 'pattern'));
+    
+    updateURL(); createUI();
+};
+
+initFromURL(); createUI();
+
+// --- WebGL Setup ---
+const canvas = document.getElementById('glcanvas');
+const gl = canvas.getContext('webgl2');
+
+function compileShader(type, source) {
+    const s = gl.createShader(type); gl.shaderSource(s, source); gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) { console.error(gl.getShaderInfoLog(s)); return null; }
+    return s;
+}
+
+function createProgram(vs, fs) {
+    const p = gl.createProgram(); gl.attachShader(p, compileShader(gl.VERTEX_SHADER, vs)); gl.attachShader(p, compileShader(gl.FRAGMENT_SHADER, fs)); gl.linkProgram(p);
+    return p;
+}
+
+const progMain = createProgram(vsSource, fsMain);
+const progTrail = createProgram(vsSource, fsTrail);
+const progPost = createProgram(vsSource, fsPost);
+
+const posBuffer = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, posBuffer);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, -1,1, 1,-1, 1,1]), gl.STATIC_DRAW);
+
+function setupQuad(prog) { const posLoc = gl.getAttribLocation(prog, "a_position"); gl.enableVertexAttribArray(posLoc); gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0); }
+
+function createFBO(w, h) {
+    const tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    const fbo = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0); return { fbo, tex };
+}
+
+let w = 0, h = 0; let mainFBO, trailReadFBO, trailWriteFBO;
+
+function hexToRGB(hex) { return [parseInt(hex.slice(1,3),16)/255, parseInt(hex.slice(3,5),16)/255, parseInt(hex.slice(5,7),16)/255]; }
+function set1f(prog, name, val) { gl.uniform1f(gl.getUniformLocation(prog, name), val); }
+function set1i(prog, name, val) { gl.uniform1i(gl.getUniformLocation(prog, name), val); }
+function set2f(prog, name, x, y) { gl.uniform2f(gl.getUniformLocation(prog, name), x, y); }
+function set3f(prog, name, x, y, z) { gl.uniform3f(gl.getUniformLocation(prog, name), x, y, z); }
+
+let startTime = performance.now();
+
+function render() {
+    const rect = canvas.parentNode.getBoundingClientRect();
+    if (canvas.width !== rect.width || canvas.height !== rect.height) {
+        canvas.width = rect.width; canvas.height = rect.height; w = canvas.width; h = canvas.height;
+        mainFBO = createFBO(w, h); trailReadFBO = createFBO(w, h); trailWriteFBO = createFBO(w, h);
+    }
+    const time = (performance.now() - startTime) * 0.001;
+
+    // --- Pass 1: Render Main Interference ---
+    gl.useProgram(progMain); gl.bindFramebuffer(gl.FRAMEBUFFER, mainFBO.fbo); gl.viewport(0, 0, w, h); setupQuad(progMain);
+
+    set2f(progMain, "u_resolution", w, h); set1f(progMain, "u_time", time);
+    set1i(progMain, "u_colorCount", state.colors.colorCount.val);
+    set3f(progMain, "u_color1", ...hexToRGB(state.colors.col1.val)); set3f(progMain, "u_color2", ...hexToRGB(state.colors.col2.val)); set3f(progMain, "u_color3", ...hexToRGB(state.colors.col3.val));
+    set1f(progMain, "u_oscActive", state.colorAnim.oscActive.val); set1f(progMain, "u_oscFreq", state.colorAnim.oscFreq.val); set1f(progMain, "u_oscShape", state.colorAnim.oscShape.val);
+    set1f(progMain, "u_scale", state.global.scale.val); set2f(progMain, "u_shear", state.global.shearX.val, state.global.shearY.val); set2f(progMain, "u_offset", state.global.offsetX.val, state.global.offsetY.val);
+    set1f(progMain, "u_shake_amp", state.global.shakeAmp.val); set1f(progMain, "u_shake_freq", state.global.shakeFreq.val); set1f(progMain, "u_rot_speed", state.global.rotSpeed.val); set1f(progMain, "u_step_factor", state.global.stepFactor.val);
+    set1f(progMain, "u_vig_center", state.effects.vigCenter.val); set1f(progMain, "u_vig_edge", state.effects.vigEdge.val); set1f(progMain, "u_vig_bias", state.effects.vigBias.val);
+
+    for(let i=0; i<MAX_INSTANCES; i++) {
+        let s = state.stripes[i]; if(s) { set1f(progMain, `u_stripes[${i}].is_active`, 1.0); set2f(progMain, `u_stripes[${i}].pivot`, s.pivotX.val, s.pivotY.val); set1f(progMain, `u_stripes[${i}].period`, s.period.val); set1f(progMain, `u_stripes[${i}].angle`, s.angle.val); set1f(progMain, `u_stripes[${i}].speed`, s.speed.val); set1f(progMain, `u_stripes[${i}].rot_speed`, s.rotSpeed.val); set1f(progMain, `u_stripes[${i}].extent`, s.extent.val); set1f(progMain, `u_stripes[${i}].strength`, s.strength.val); set1f(progMain, `u_stripes[${i}].d_freq`, s.distortFreq.val); set1f(progMain, `u_stripes[${i}].d_amp`, s.distortAmp.val); set1f(progMain, `u_stripes[${i}].d_speed`, s.distortSpeed.val); set1f(progMain, `u_stripes[${i}].d_par`, s.distMultPar.val); set1f(progMain, `u_stripes[${i}].d_orth`, s.distMultOrth.val); set1f(progMain, `u_stripes[${i}].w_freq`, s.waveFreq.val); set1f(progMain, `u_stripes[${i}].w_amp`, s.waveAmp.val); set1f(progMain, `u_stripes[${i}].w_shape`, s.waveShape.val); } else set1f(progMain, `u_stripes[${i}].is_active`, 0.0);
+        let r = state.ripples[i]; if(r) { set1f(progMain, `u_ripples[${i}].is_active`, 1.0); set2f(progMain, `u_ripples[${i}].pivot`, r.pivotX.val, r.pivotY.val); set1f(progMain, `u_ripples[${i}].period`, r.period.val); set1f(progMain, `u_ripples[${i}].speed`, r.speed.val); set2f(progMain, `u_ripples[${i}].rot_pivot`, r.rotPivX.val, r.rotPivY.val); set1f(progMain, `u_ripples[${i}].rot_speed`, r.rotSpeed.val); set1f(progMain, `u_ripples[${i}].noise_move`, r.noiseMove.val); set1f(progMain, `u_ripples[${i}].strength`, r.strength.val); set1f(progMain, `u_ripples[${i}].d_freq`, r.distortFreq.val); set1f(progMain, `u_ripples[${i}].d_amp`, r.distortAmp.val); set1f(progMain, `u_ripples[${i}].d_speed`, r.distortSpeed.val); set1f(progMain, `u_ripples[${i}].d_par`, r.distMultPar.val); set1f(progMain, `u_ripples[${i}].d_orth`, r.distMultOrth.val); set1f(progMain, `u_ripples[${i}].w_freq`, r.waveFreq.val); set1f(progMain, `u_ripples[${i}].w_amp`, r.waveAmp.val); set1f(progMain, `u_ripples[${i}].w_shape`, r.waveShape.val); } else set1f(progMain, `u_ripples[${i}].is_active`, 0.0);
+        let ry = state.rays[i];   if(ry){ set1f(progMain, `u_rays[${i}].is_active`, 1.0); set2f(progMain, `u_rays[${i}].pivot`, ry.pivotX.val, ry.pivotY.val); set1f(progMain, `u_rays[${i}].period`, ry.period.val); set1f(progMain, `u_rays[${i}].speed`, ry.speed.val); set2f(progMain, `u_rays[${i}].rot_pivot`, ry.rotPivX.val, ry.rotPivY.val); set1f(progMain, `u_rays[${i}].rot_speed`, ry.rotSpeed.val); set1f(progMain, `u_rays[${i}].noise_move`, ry.noiseMove.val); set1f(progMain, `u_rays[${i}].strength`, ry.strength.val); set1f(progMain, `u_rays[${i}].d_freq`, ry.distortFreq.val); set1f(progMain, `u_rays[${i}].d_amp`, ry.distortAmp.val); set1f(progMain, `u_rays[${i}].d_speed`, ry.distortSpeed.val); set1f(progMain, `u_rays[${i}].d_par`, ry.distMultPar.val); set1f(progMain, `u_rays[${i}].d_orth`, ry.distMultOrth.val); set1f(progMain, `u_rays[${i}].w_freq`, ry.waveFreq.val); set1f(progMain, `u_rays[${i}].w_amp`, ry.waveAmp.val); set1f(progMain, `u_rays[${i}].w_shape`, ry.waveShape.val); } else set1f(progMain, `u_rays[${i}].is_active`, 0.0);
+        let pn = state.perlins[i]; if(pn) { set1f(progMain, `u_perlins[${i}].is_active`, 1.0); set2f(progMain, `u_perlins[${i}].pivot`, pn.pivotX.val, pn.pivotY.val); set1f(progMain, `u_perlins[${i}].scale`, pn.scale.val); set1f(progMain, `u_perlins[${i}].z_speed`, pn.zSpeed.val); set1f(progMain, `u_perlins[${i}].z_offset`, pn.zOffset.val); set1f(progMain, `u_perlins[${i}].strength`, pn.strength.val); } else set1f(progMain, `u_perlins[${i}].is_active`, 0.0);
+    }
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+    // --- Pass 2: Trail Combine ---
+    gl.useProgram(progTrail); gl.bindFramebuffer(gl.FRAMEBUFFER, trailWriteFBO.fbo); setupQuad(progTrail);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, mainFBO.tex); set1i(progTrail, "u_main", 0);
+    gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, trailReadFBO.tex); set1i(progTrail, "u_history", 1);
+    set1f(progTrail, "u_trail", state.postProcessing.trailAmount.val);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+    // --- Pass 3: Screen Post-Processing ---
+    gl.useProgram(progPost); gl.bindFramebuffer(gl.FRAMEBUFFER, null); setupQuad(progPost);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, trailWriteFBO.tex); set1i(progPost, "u_image", 0);
+    set2f(progPost, "u_res", w, h); set1f(progPost, "u_time", time);
+    set1f(progPost, "u_blurRadius", state.postProcessing.blurRadius.val); set1f(progPost, "u_glow", state.postProcessing.glowStrength.val); set1f(progPost, "u_brightness", state.postProcessing.brightness.val); set1f(progPost, "u_contrast", state.postProcessing.contrast.val);
+    set1f(progPost, "u_noise_freq", state.effects.noiseFreq.val); set1f(progPost, "u_noise_strength", state.effects.noiseStrength.val); set1f(progPost, "u_noise_bias", state.effects.noiseBias.val);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+    let temp = trailReadFBO; trailReadFBO = trailWriteFBO; trailWriteFBO = temp;
+    requestAnimationFrame(render);
+}
+
+render();
+</script>
+</body>
+</html>
