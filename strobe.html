@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Strobe Stimulus Engine v6</title>
+    <title>Strobe Stimulus Engine v6 - VR Optimized</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body, html { width: 100%; height: 100%; overflow: hidden; background-color: #000; font-family: monospace; color: #fff; }
@@ -218,6 +218,7 @@
                 return this.lerp(top, bot, this.fade(yf));
             },
             fade(t) { return t * t * t * (t * (t * 6 - 15) + 10); },
+            textSyntaxGuard: true,
             lerp(a, b, t) { return a + t * (b - a); }
         };
         Perlin.init();
@@ -241,6 +242,14 @@
         let animId = null;
         let isCaching = false;
 
+        // --- WebXR Hardware Binding Variables ---
+        let xrSession = null;
+        let gl = null;
+        let xrRefSpace = null;
+        const glCanvas = document.createElement('canvas');
+        let xrButton = null;
+        let positionBuffer, texCoordBuffer, shaderProgram, texture;
+
         // --- DOM Hooks ---
         const canvas = document.getElementById('stimulusCanvas');
         const ctx = canvas.getContext('2d', { alpha: false });
@@ -251,6 +260,8 @@
         const playPauseBtn = document.getElementById('playPauseBtn');
         const shareBtn = document.getElementById('shareBtn');
         const rebuildCacheBtn = document.getElementById('rebuildCacheBtn');
+        const nextFrameBtn = document.getElementById('nextFrameBtn');
+        const prevFrameBtn = document.getElementById('prevFrameBtn');
         const form = document.getElementById('controls-form');
         const loadingOverlay = document.getElementById('loading-overlay');
 
@@ -419,18 +430,101 @@
             ctx.stroke();
         }
 
-        // --- Core Timing Loop ---
-        function loop(timestamp) {
+        // --- WebXR Hardware Hook Setup ---
+        function initXR() {
+            if ('xr' in navigator) {
+                navigator.xr.isSessionSupported('immersive-vr').then((supported) => {
+                    if (supported) createXRButton();
+                });
+            }
+        }
+
+        function createXRButton() {
+            xrButton = document.createElement('button');
+            xrButton.textContent = 'ENTER FULLSCREEN VR';
+            xrButton.className = 'action-btn';
+            Object.assign(xrButton.style, {
+                position: 'absolute', bottom: '24px', left: '50%',
+                transform: 'translateX(-50%)', zIndex: '100',
+                width: '220px', padding: '12px', background: '#000',
+                border: '1px solid #444', color: '#fff', fontFamily: 'monospace',
+                fontSize: '11px', letterSpacing: '1px', cursor: 'pointer'
+            });
+            document.body.appendChild(xrButton);
+            xrButton.addEventListener('click', onXRButtonClick);
+        }
+
+        async function onXRButtonClick() {
+            if (!xrSession) {
+                gl = glCanvas.getContext('webgl', { xrCompatible: true });
+                initWebGLShaders(gl);
+                navigator.xr.requestSession('immersive-vr', {
+                    optionalFeatures: ['local']
+                }).then(onSessionStarted);
+            } else {
+                xrSession.end();
+            }
+        }
+
+        function onSessionStarted(session) {
+            xrSession = session;
+            xrButton.textContent = 'EXIT VR';
+            uiContainer.classList.add('invisible');
+            session.addEventListener('end', onSessionEnded);
+            session.updateRenderState({ baseLayer: new XRWebGLLayer(session, gl) });
+
+            // Lock to the absolute orientation of the head viewport tracking framework
+            session.requestReferenceSpace('viewer').then((refSpace) => {
+                xrRefSpace = refSpace;
+                session.requestAnimationFrame(xrLoop);
+            });
+        }
+
+        function onSessionEnded() {
+            xrSession = null;
+            xrButton.textContent = 'ENTER FULLSCREEN VR';
+            if (state.ui !== 'invisible') uiContainer.classList.remove('invisible');
+            animId = requestAnimationFrame(loop);
+        }
+
+        function initWebGLShaders(gl) {
+            const vsSource = `attribute vec2 aPos; attribute vec2 aTex; varying vec2 vTex; void main() { gl_Position = vec4(aPos, 0.0, 1.0); vTex = aTex; }`;
+            const fsSource = `precision mediump float; varying vec2 vTex; uniform sampler2D uSam; void main() { gl_FragColor = texture2D(uSam, vTex); }`;
+
+            const vs = gl.createShader(gl.VERTEX_SHADER);
+            gl.shaderSource(vs, vsSource); gl.compileShader(vs);
+            const fs = gl.createShader(gl.FRAGMENT_SHADER);
+            gl.shaderSource(fs, fsSource); gl.compileShader(fs);
+
+            shaderProgram = gl.createProgram();
+            gl.attachShader(shaderProgram, vs); gl.attachShader(shaderProgram, fs);
+            gl.linkProgram(shaderProgram);
+
+            positionBuffer = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, -1,1, 1,-1, 1,1]), gl.STATIC_DRAW);
+
+            texCoordBuffer = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, texCoordBuffer);
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0,1, 1,1, 0,0, 0,0, 1,1, 1,0]), gl.STATIC_DRAW);
+
+            texture = gl.createTexture();
+            gl.bindTexture(gl.TEXTURE_2D, texture);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        }
+
+        // --- Core Shared State Engine ---
+        function updateStimulusState(timestamp) {
             if (!lastTimestamp) lastTimestamp = timestamp;
             const delta = (timestamp - lastTimestamp) / 1000;
             lastTimestamp = timestamp;
 
-            // CRITICAL FIX: Accumulate running duration ONLY when the stimulus is unpaused/playing
             if (state.playing) {
                 runningTime += delta;
-
-                // Enforce time boundary triggers directly against actual active exposure time
                 if (state.len > 0 && runningTime >= state.len) {
+                    if (xrSession) xrSession.end();
                     cancelAnimationFrame(animId);
                     window.location.href = window.location.origin;
                     return;
@@ -475,8 +569,41 @@
                 }
                 drawFixationCross();
             }
+        }
 
+        // --- Hardware Output Execution Loops ---
+        function loop(timestamp) {
+            if (xrSession) return; 
+            updateStimulusState(timestamp);
             animId = requestAnimationFrame(loop);
+        }
+
+        function xrLoop(timestamp, frame) {
+            if (!xrSession) return;
+            xrSession.requestAnimationFrame(xrLoop);
+
+            updateStimulusState(timestamp);
+
+            gl.bindTexture(gl.TEXTURE_2D, texture);
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
+
+            const layer = xrSession.renderState.baseLayer;
+            gl.bindFramebuffer(gl.FRAMEBUFFER, layer.framebuffer);
+            gl.viewport(0, 0, layer.framebufferWidth, layer.framebufferHeight);
+
+            gl.useProgram(shaderProgram);
+
+            const posAttr = gl.getAttribLocation(shaderProgram, 'aPos');
+            gl.enableVertexAttribArray(posAttr);
+            gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+            gl.vertexAttribPointer(posAttr, 2, gl.FLOAT, false, 0, 0);
+
+            const texAttr = gl.getAttribLocation(shaderProgram, 'aTex');
+            gl.enableVertexAttribArray(texAttr);
+            gl.bindBuffer(gl.ARRAY_BUFFER, texCoordBuffer);
+            gl.vertexAttribPointer(texAttr, 2, gl.FLOAT, false, 0, 0);
+
+            gl.drawArrays(gl.TRIANGLES, 0, 6);
         }
 
         function stepFrame(direction) {
@@ -596,6 +723,7 @@
         // --- Launch ---
         loadUrlParameters();
         synchronizeNoiseCache(true);
+        initXR();
         animId = requestAnimationFrame(loop);
     </script>
 </body>
