@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Strobe Stimulus Engine v6 - Stable VR</title>
+    <title>Strobe Stimulus Engine v7 - Instant GPU Noise</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body, html { width: 100%; height: 100%; overflow: hidden; background-color: #000; font-family: monospace; color: #fff; }
@@ -19,6 +19,7 @@
         }
         #interface-container.collapsed { width: auto; }
         #interface-container.collapsed #controls-form { display: none; }
+        
         #interface-header {
             padding: 6px 10px; display: flex; justify-content: space-between;
             align-items: center; cursor: pointer; user-select: none; background: #111;
@@ -55,7 +56,6 @@
             position: absolute; top: 0; left: 0; width: 100%; height: 100%;
             background: rgba(0, 0, 0, 1.0); z-index: 100; display: flex;
             flex-direction: column; justify-content: center; align-items: center; 
-            font-size: 11px; letter-spacing: 2px;
         }
         
         .invisible { display: none !important; }
@@ -64,8 +64,7 @@
 <body>
 
     <div id="participant-overlay" class="invisible">
-        <div id="status-text">LOADING...</div>
-        <button type="button" id="beginBtn" class="action-btn invisible" style="width: 220px; padding: 12px; margin-top: 15px; letter-spacing: 1px; border-color: #444;">BEGIN STIMULUS</button>
+        <button type="button" id="beginBtn" class="action-btn" style="width: 220px; padding: 12px; letter-spacing: 1px; border-color: #444;">BEGIN STIMULUS</button>
     </div>
 
     <canvas id="stimulusCanvas"></canvas>
@@ -110,13 +109,7 @@
                     <div><label>AMP 1</label><input type="number" id="na1" value="0.2" step="0.05" min="0" max="1"></div>
                     <div><label>AMP 2</label><input type="number" id="na2" value="0.2" step="0.05" min="0" max="1"></div>
                 </div>
-                <div class="row" style="margin-top: 6px;">
-                    <div><label>CACHE SIZE (FRAMES)</label><input type="number" id="cacheSize" value="30" step="1" min="2" max="120"></div>
                 </div>
-                <div class="btn-stack" style="grid-template-columns: 1fr; margin-top: 6px;">
-                    <button type="button" id="rebuildCacheBtn" class="action-btn">REBUILD CACHE <span id="loading-indicator"></span></button>
-                </div>
-            </div>
 
             <div class="control-group">
                 <div class="row">
@@ -132,11 +125,7 @@
                     <button type="button" id="vrBtn" class="action-btn" style="border-color: #555;">ENTER FULLSCREEN VR</button>
                 </div>
                 <div class="btn-stack" style="margin-top: 6px;">
-                    <button type="button" id="prevFrameBtn" class="action-btn">◀ PREV</button>
-                    <button type="button" id="nextFrameBtn" class="action-btn">NEXT ▶</button>
-                </div>
-                <div class="btn-stack" style="grid-template-columns: 1fr;">
-                    <button type="button" id="playPauseBtn" class="action-btn">PAUSE</button>
+                    <button type="button" id="playPauseBtn" class="action-btn" style="grid-column: span 2;">PAUSE</button>
                 </div>
             </div>
 
@@ -179,24 +168,48 @@
         const state = {
             c1: '#000000', c2: '#ffffff', freq: 7, duty: 50,
             ntype: 'white', nres: 1, ns1: false, na1: 0.2, ns2: false, na2: 0.2,
-            cacheSize: 30, fc: false, fcc: '#ff0000', fcs: 15,
-            ui: 'collapsed', len: 0, playing: false // Hard default to paused on open
+            fc: false, fcc: '#ff0000', fcs: 15,
+            ui: 'collapsed', len: 0, playing: false 
         };
 
-        let cachedFrames1 = []; let cachedFrames2 = [];
-        let activeIndex1 = 0; let activeIndex2 = 0;
         let lastPhase = -1; let lastTimestamp = null;
         let runningTime = 0; let animId = null;
-        let isCaching = false;
-        
-        // Strict rendering flow controls
-        let needsTextureUpload = true; 
-        let forceBlack = false; 
-        let blackDrawn = false;
+        let forceBlack = false; let blackDrawn = false;
+        let stimulusActivated = false;
+
+        // --- Master Noise Tile (Generated Once Instantly) ---
+        // This tiny 512x512 tile replaces the entire caching system
+        const tileCanvas = document.createElement('canvas');
+        tileCanvas.width = 512; tileCanvas.height = 512;
+        const tileCtx = tileCanvas.getContext('2d', { alpha: false });
+        let webglNoiseTexture = null;
+
+        function rebuildMasterNoiseTile() {
+            const w = tileCanvas.width; const h = tileCanvas.height;
+            tileCtx.fillStyle = '#808080'; // 50% gray base
+            tileCtx.fillRect(0, 0, w, h);
+
+            const px = state.nres; const isPerlin = state.ntype === 'perlin';
+            for (let x = 0; x < w; x += px) {
+                for (let y = 0; y < h; y += px) {
+                    let n = isPerlin ? (Perlin.noise(x * 0.05, y * 0.05) * 2.0 - 1.0) : (Math.random() * 2.0 - 1.0);
+                    // Store as 0-255 grayscale
+                    let val = Math.floor((n + 1.0) * 127.5);
+                    tileCtx.fillStyle = `rgb(${val},${val},${val})`;
+                    tileCtx.fillRect(x, y, px, px);
+                }
+            }
+            
+            // If VR is active, push this new tile to the GPU once
+            if (gl && webglNoiseTexture) {
+                gl.bindTexture(gl.TEXTURE_2D, webglNoiseTexture);
+                gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, gl.LUMINANCE, gl.UNSIGNED_BYTE, tileCanvas);
+            }
+        }
 
         // --- WebXR State ---
         let xrSession = null; let gl = null; let xrRefSpace = null;
-        let xrSupported = false; let texture = null; let shaderProgram = null;
+        let xrSupported = false; let shaderProgram = null;
         let positionBuffer, texCoordBuffer;
         const glCanvas = document.createElement('canvas');
 
@@ -209,15 +222,9 @@
         const toggleBtn = document.getElementById('toggle-btn');
         const playPauseBtn = document.getElementById('playPauseBtn');
         const shareBtn = document.getElementById('shareBtn');
-        const rebuildCacheBtn = document.getElementById('rebuildCacheBtn');
-        const loadingIndicator = document.getElementById('loading-indicator');
-        const nextFrameBtn = document.getElementById('nextFrameBtn');
-        const prevFrameBtn = document.getElementById('prevFrameBtn');
         const vrBtn = document.getElementById('vrBtn');
         const form = document.getElementById('controls-form');
-        
         const participantOverlay = document.getElementById('participant-overlay');
-        const statusText = document.getElementById('status-text');
         const beginBtn = document.getElementById('beginBtn');
 
         function loadUrlParameters() {
@@ -232,14 +239,13 @@
             if (p.has('na1')) state.na1 = parseFloat(p.get('na1'));
             if (p.has('ns2')) state.ns2 = p.get('ns2') === '1';
             if (p.has('na2')) state.na2 = parseFloat(p.get('na2'));
-            if (p.has('cache')) state.cacheSize = parseInt(p.get('cache'), 10);
             if (p.has('fc')) state.fc = p.get('fc') === '1';
             if (p.has('fcc')) state.fcc = '#' + p.get('fcc');
             if (p.has('fcs')) state.fcs = parseInt(p.get('fcs'), 10);
             if (p.has('ui')) state.ui = p.get('ui');
             if (p.has('len')) state.len = parseInt(p.get('len'), 10);
             
-            state.playing = false; // Always pause initially to await cache or user action
+            state.playing = false; 
             updateUiFromState();
         }
 
@@ -249,32 +255,27 @@
             document.getElementById('ntype').value = state.ntype; document.getElementById('nres').value = state.nres;
             document.getElementById('ns1').checked = state.ns1; document.getElementById('na1').value = state.na1;
             document.getElementById('ns2').checked = state.ns2; document.getElementById('na2').value = state.na2;
-            document.getElementById('cacheSize').value = state.cacheSize;
             document.getElementById('fc').checked = state.fc; document.getElementById('fcc').value = state.fcc;
             document.getElementById('fcs').value = state.fcs;
 
             playPauseBtn.textContent = state.playing ? 'PAUSE' : 'PLAY';
-            loadingIndicator.textContent = isCaching ? '(LOADING)' : '';
 
-            // Layout Routing based on UI Mode
+            // Ensure the UI displays correctly based on 'collapsed' status
             if (state.ui === 'invisible') {
                 uiContainer.classList.add('invisible');
-                // Only show overlay if the start sequence hasn't finished
-                if (!state.playing && runningTime === 0) {
+                if (!stimulusActivated) {
                     participantOverlay.classList.remove('invisible');
-                    if (!isCaching && cachedFrames1.length >= state.cacheSize) {
-                        statusText.classList.add('invisible'); beginBtn.classList.remove('invisible');
-                    } else {
-                        statusText.classList.remove('invisible'); beginBtn.classList.add('invisible');
-                    }
                 }
             } else {
                 uiContainer.classList.remove('invisible');
                 participantOverlay.classList.add('invisible');
+                stimulusActivated = true; 
                 
                 if (state.ui === 'collapsed') {
-                    uiContainer.classList.add('collapsed'); panelTitle.textContent = "STROBE"; toggleBtn.textContent = 'EXPAND';
+                    uiContainer.classList.add('collapsed'); 
+                    panelTitle.textContent = "STROBE"; toggleBtn.textContent = 'EXPAND';
                 } else {
+                    uiContainer.classList.remove('collapsed'); 
                     panelTitle.textContent = "CONTROLS"; toggleBtn.textContent = 'COLLAPSE';
                 }
             }
@@ -286,64 +287,134 @@
             state.ntype = document.getElementById('ntype').value; state.nres = parseInt(document.getElementById('nres').value, 10) || 1;
             state.ns1 = document.getElementById('ns1').checked; state.na1 = parseFloat(document.getElementById('na1').value) || 0;
             state.ns2 = document.getElementById('ns2').checked; state.na2 = parseFloat(document.getElementById('na2').value) || 0;
-            state.cacheSize = parseInt(document.getElementById('cacheSize').value, 10) || 10;
             state.fc = document.getElementById('fc').checked; state.fcc = document.getElementById('fcc').value;
             state.fcs = parseInt(document.getElementById('fcs').value, 10) || 15;
-        }
-
-        let currentCacheId = 0; 
-        function synchronizeNoiseCache(forceCompleteRebuild = false) {
-            isCaching = true; updateUiFromState();
             
-            if (canvas.width !== window.innerWidth || canvas.height !== window.innerHeight) {
-                canvas.width = window.innerWidth; canvas.height = window.innerHeight; forceCompleteRebuild = true; 
-            }
-
-            if (forceCompleteRebuild) { cachedFrames1 = []; cachedFrames2 = []; }
-
-            if (cachedFrames1.length > state.cacheSize) { cachedFrames1.length = state.cacheSize; cachedFrames2.length = state.cacheSize; }
-
-            const myCacheId = ++currentCacheId;
-
-            function processSlice() {
-                if (myCacheId !== currentCacheId) return; 
-
-                if (cachedFrames1.length >= state.cacheSize) {
-                    isCaching = false; updateUiFromState(); lastPhase = -1; return;
-                }
-
-                const fCanvas1 = document.createElement('canvas'); fCanvas1.width = canvas.width; fCanvas1.height = canvas.height;
-                generateNoisePattern(fCanvas1, fCanvas1.getContext('2d', { alpha: false }), state.c1, state.ns1, state.na1);
-                cachedFrames1.push(fCanvas1);
-
-                const fCanvas2 = document.createElement('canvas'); fCanvas2.width = canvas.width; fCanvas2.height = canvas.height;
-                generateNoisePattern(fCanvas2, fCanvas2.getContext('2d', { alpha: false }), state.c2, state.ns2, state.na2);
-                cachedFrames2.push(fCanvas2);
-
-                setTimeout(processSlice, 0);
-            }
-            processSlice();
+            rebuildMasterNoiseTile();
         }
 
-        function generateNoisePattern(tCanvas, tCtx, baseColorHex, noiseEnabled, noiseAmp) {
-            const w = tCanvas.width; const h = tCanvas.height;
-            tCtx.fillStyle = baseColorHex; tCtx.fillRect(0, 0, w, h);
+        // --- WebGL Shaders for VR (The Fix) ---
+        function initXR() {
+            if ('xr' in navigator) { navigator.xr.isSessionSupported('immersive-vr').then((supported) => { xrSupported = supported; }); }
+        }
 
-            if (!noiseEnabled || noiseAmp <= 0) return;
+        function hexToRgb(hex) {
+            return [parseInt(hex.slice(1, 3), 16) / 255.0, parseInt(hex.slice(3, 5), 16) / 255.0, parseInt(hex.slice(5, 7), 16) / 255.0];
+        }
 
-            const rBase = parseInt(baseColorHex.slice(1, 3), 16); const gBase = parseInt(baseColorHex.slice(3, 5), 16); const bBase = parseInt(baseColorHex.slice(5, 7), 16);
-            const px = state.nres; const isPerlin = state.ntype === 'perlin';
+        function initWebGLShaders(gl) {
+            const vsSource = `
+                attribute vec2 aPos; varying vec2 vTex; 
+                void main() { gl_Position = vec4(aPos, 0.0, 1.0); vTex = (aPos + 1.0) / 2.0; }`;
+            
+            // This shader applies the colors and reads the noise tile at a random offset
+            const fsSource = `
+                precision highp float;
+                varying vec2 vTex;
+                uniform sampler2D uNoiseTile;
+                uniform vec2 uNoiseOffset;
+                
+                uniform vec2 uResolution;
+                uniform float uPhase; // -1.0=black, 0.0=phase1, 1.0=phase2
+                
+                uniform vec3 uColor1; uniform float uNs1; uniform float uNa1;
+                uniform vec3 uColor2; uniform float uNs2; uniform float uNa2;
+                uniform float uNRes;
+                
+                uniform float uFixActive; uniform vec3 uFixColor; uniform float uFixSize;
 
-            for (let x = 0; x < w; x += px) {
-                for (let y = 0; y < h; y += px) {
-                    let noiseVal = isPerlin ? (Perlin.noise(x * 0.05, y * 0.05) * 2.0 - 1.0) : (Math.random() * 2.0 - 1.0);
-                    const factor = noiseVal * noiseAmp;
-                    const r = Math.min(255, Math.max(0, rBase + factor * 255));
-                    const g = Math.min(255, Math.max(0, gBase + factor * 255));
-                    const b = Math.min(255, Math.max(0, bBase + factor * 255));
-                    tCtx.fillStyle = `rgb(${Math.floor(r)},${Math.floor(g)},${Math.floor(b)})`; tCtx.fillRect(x, y, px, px);
-                }
+                void main() {
+                    if (uPhase < -0.5) { gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); return; }
+
+                    vec3 baseColor = (uPhase < 0.5) ? uColor1 : uColor2;
+                    float noiseActive = (uPhase < 0.5) ? uNs1 : uNs2;
+                    float noiseAmp = (uPhase < 0.5) ? uNa1 : uNa2;
+
+                    if (noiseActive > 0.5 && noiseAmp > 0.0) {
+                        // Map screen UV to the 512x512 tile, applying pixel resolution scale
+                        vec2 scaledUV = (gl_FragCoord.xy / max(1.0, uNRes)) / 512.0;
+                        
+                        // Sample the texture and apply the random per-frame offset
+                        vec4 noiseSample = texture2D(uNoiseTile, fract(scaledUV + uNoiseOffset));
+                        
+                        // Convert 0.0->1.0 to -1.0->1.0
+                        float n = (noiseSample.r * 2.0) - 1.0;
+                        baseColor += vec3(n * noiseAmp);
+                    }
+
+                    baseColor = clamp(baseColor, 0.0, 1.0);
+
+                    // Fixation cross
+                    if (uFixActive > 0.5) {
+                        vec2 center = uResolution / 2.0;
+                        vec2 diff = abs(gl_FragCoord.xy - center);
+                        if ((diff.x < uFixSize && diff.y < 2.0) || (diff.y < uFixSize && diff.x < 2.0)) { 
+                            baseColor = uFixColor; 
+                        }
+                    }
+                    
+                    gl_FragColor = vec4(baseColor, 1.0);
+                }`;
+
+            const vs = gl.createShader(gl.VERTEX_SHADER); gl.shaderSource(vs, vsSource); gl.compileShader(vs);
+            const fs = gl.createShader(gl.FRAGMENT_SHADER); gl.shaderSource(fs, fsSource); gl.compileShader(fs);
+
+            shaderProgram = gl.createProgram(); gl.attachShader(shaderProgram, vs); gl.attachShader(shaderProgram, fs); gl.linkProgram(shaderProgram);
+
+            positionBuffer = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, -1,1, 1,-1, 1,1]), gl.STATIC_DRAW);
+
+            // Create and upload the Master Noise Tile
+            webglNoiseTexture = gl.createTexture();
+            gl.bindTexture(gl.TEXTURE_2D, webglNoiseTexture);
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, gl.LUMINANCE, gl.UNSIGNED_BYTE, tileCanvas);
+            
+            // Set it to REPEAT so the offset trick works seamlessly across screen edges
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+        }
+
+        // --- Participant Loading Sequence ---
+        function executeStartSequence() {
+            participantOverlay.classList.add('invisible');
+            forceBlack = true; blackDrawn = false;
+            
+            setTimeout(() => {
+                forceBlack = false;
+                runningTime = 0; 
+                lastTimestamp = performance.now();
+                state.playing = true;
+                stimulusActivated = true;
+                lastPhase = -1; 
+                updateUiFromState();
+            }, 500);
+        }
+
+        async function startVR() {
+            if (!xrSupported) { executeStartSequence(); return; }
+            gl = glCanvas.getContext('webgl', { xrCompatible: true });
+            initWebGLShaders(gl);
+            try {
+                const session = await navigator.xr.requestSession('immersive-vr', { optionalFeatures: ['local'] });
+                xrSession = session;
+                session.addEventListener('end', onSessionEnded);
+                session.updateRenderState({ baseLayer: new XRWebGLLayer(session, gl) });
+                xrRefSpace = await session.requestReferenceSpace('viewer');
+                session.requestAnimationFrame(xrLoop);
+                executeStartSequence();
+            } catch (e) {
+                console.warn("VR request failed", e);
+                executeStartSequence();
             }
+        }
+
+        beginBtn.addEventListener('click', startVR);
+        vrBtn.addEventListener('click', startVR);
+
+        function onSessionEnded() {
+            xrSession = null; state.playing = false; updateUiFromState(); animId = requestAnimationFrame(loop);
         }
 
         function drawFixationCross() {
@@ -354,94 +425,17 @@
             ctx.moveTo(cx, cy - size); ctx.lineTo(cx, cy + size); ctx.stroke();
         }
 
-        // --- WebXR Bindings & Pipelines ---
-        function initXR() {
-            if ('xr' in navigator) { navigator.xr.isSessionSupported('immersive-vr').then((supported) => { xrSupported = supported; }); }
-        }
-
-        function initWebGLShaders(gl) {
-            const vsSource = `attribute vec2 aPos; attribute vec2 aTex; varying vec2 vTex; void main() { gl_Position = vec4(aPos, 0.0, 1.0); vTex = aTex; }`;
-            const fsSource = `precision mediump float; varying vec2 vTex; uniform sampler2D uSam; void main() { gl_FragColor = texture2D(uSam, vTex); }`;
-
-            const vs = gl.createShader(gl.VERTEX_SHADER); gl.shaderSource(vs, vsSource); gl.compileShader(vs);
-            const fs = gl.createShader(gl.FRAGMENT_SHADER); gl.shaderSource(fs, fsSource); gl.compileShader(fs);
-
-            shaderProgram = gl.createProgram(); gl.attachShader(shaderProgram, vs); gl.attachShader(shaderProgram, fs); gl.linkProgram(shaderProgram);
-
-            positionBuffer = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
-            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, -1,1, 1,-1, 1,1]), gl.STATIC_DRAW);
-            texCoordBuffer = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, texCoordBuffer);
-            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0,1, 1,1, 0,0, 0,0, 1,1, 1,0]), gl.STATIC_DRAW);
-
-            texture = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, texture);
-            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-        }
-
-        // Gated Sequence explicitly controls the 500ms black block and syncs the timer
-        function executeStartSequence() {
-            participantOverlay.classList.add('invisible');
-            forceBlack = true; blackDrawn = false;
-            
-            setTimeout(() => {
-                forceBlack = false;
-                runningTime = 0; // Absolute zero point for length tracking
-                lastTimestamp = performance.now();
-                state.playing = true;
-                lastPhase = -1; // Force immediate frame draw
-                updateUiFromState();
-            }, 500);
-        }
-
-        beginBtn.addEventListener('click', async () => {
-            if (xrSupported) {
-                gl = glCanvas.getContext('webgl', { xrCompatible: true });
-                initWebGLShaders(gl);
-                try {
-                    const session = await navigator.xr.requestSession('immersive-vr', { optionalFeatures: ['local'] });
-                    xrSession = session;
-                    session.addEventListener('end', onSessionEnded);
-                    session.updateRenderState({ baseLayer: new XRWebGLLayer(session, gl) });
-                    xrRefSpace = await session.requestReferenceSpace('viewer');
-                    session.requestAnimationFrame(xrLoop);
-                    executeStartSequence();
-                } catch (e) {
-                    console.warn("VR request failed", e);
-                    executeStartSequence();
-                }
-            } else {
-                executeStartSequence();
-            }
-        });
-
-        vrBtn.addEventListener('click', () => {
-            if (xrSupported) {
-                gl = glCanvas.getContext('webgl', { xrCompatible: true });
-                initWebGLShaders(gl);
-                navigator.xr.requestSession('immersive-vr', { optionalFeatures: ['local'] }).then(session => {
-                    xrSession = session;
-                    session.addEventListener('end', onSessionEnded);
-                    session.updateRenderState({ baseLayer: new XRWebGLLayer(session, gl) });
-                    session.requestReferenceSpace('viewer').then((refSpace) => {
-                        xrRefSpace = refSpace;
-                        lastPhase = -1; // Force initial GPU sync
-                        session.requestAnimationFrame(xrLoop);
-                    });
-                });
-            }
-        });
-
-        function onSessionEnded() {
-            xrSession = null; state.playing = false; updateUiFromState(); animId = requestAnimationFrame(loop);
-        }
-
-        // --- Core Shared Rendering Engine ---
+        // --- Desktop Render Loop ---
         function updateStimulusState(timestamp) {
-            // Priority intercept for the 500ms startup blackout
-            if (forceBlack) {
+            if (canvas.width !== window.innerWidth || canvas.height !== window.innerHeight) {
+                canvas.width = window.innerWidth; canvas.height = window.innerHeight;
+                lastPhase = -1; // Force redraw
+            }
+
+            if (forceBlack || !stimulusActivated) {
                 if (!blackDrawn) {
                     ctx.fillStyle = '#000000'; ctx.fillRect(0, 0, canvas.width, canvas.height);
-                    needsTextureUpload = true; blackDrawn = true;
+                    blackDrawn = true;
                 }
                 return;
             } else { blackDrawn = false; }
@@ -452,8 +446,7 @@
             if (state.playing) {
                 runningTime += delta;
                 if (state.len > 0 && runningTime >= state.len) {
-                    if (xrSession) xrSession.end(); else { cancelAnimationFrame(animId); window.location.href = window.location.origin; }
-                    return;
+                    cancelAnimationFrame(animId); window.location.href = window.location.origin; return;
                 }
             }
 
@@ -462,41 +455,60 @@
             const dutyBoundary = (state.duty / 100) * period;
             const currentPhase = (timeInPeriod < dutyBoundary) ? 0 : 1;
 
-            const frameAvailable1 = cachedFrames1.length > 0; const frameAvailable2 = cachedFrames2.length > 0;
+            if (currentPhase !== lastPhase || state.playing) {
+                const hexColor = currentPhase === 0 ? state.c1 : state.c2;
+                const useNoise = currentPhase === 0 ? state.ns1 : state.ns2;
+                const noiseAmp = currentPhase === 0 ? state.na1 : state.na2;
 
-            // Mathematical check: We only process the canvas and flag the GPU when the phase flips
-            if (currentPhase !== lastPhase) {
-                if (currentPhase === 0) {
-                    if (state.playing) activeIndex1 = frameAvailable1 ? (activeIndex1 + 1) % cachedFrames1.length : 0;
-                    if (frameAvailable1) ctx.drawImage(cachedFrames1[activeIndex1], 0, 0); else { ctx.fillStyle = state.c1; ctx.fillRect(0, 0, canvas.width, canvas.height); }
-                } else {
-                    if (state.playing) activeIndex2 = frameAvailable2 ? (activeIndex2 + 1) % cachedFrames2.length : 0;
-                    if (frameAvailable2) ctx.drawImage(cachedFrames2[activeIndex2], 0, 0); else { ctx.fillStyle = state.c2; ctx.fillRect(0, 0, canvas.width, canvas.height); }
+                ctx.fillStyle = hexColor; ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+                if (useNoise && noiseAmp > 0) {
+                    // Desktop Noise Optimization: Draw the tile randomly repeating across the screen
+                    ctx.globalAlpha = noiseAmp;
+                    const offsetX = Math.random() * tileCanvas.width;
+                    const offsetY = Math.random() * tileCanvas.height;
+                    
+                    const ptrn = ctx.createPattern(tileCanvas, 'repeat');
+                    
+                    ctx.save();
+                    ctx.translate(-offsetX, -offsetY);
+                    ctx.fillStyle = ptrn;
+                    ctx.fillRect(0, 0, canvas.width + tileCanvas.width, canvas.height + tileCanvas.height);
+                    ctx.restore();
+                    ctx.globalAlpha = 1.0;
                 }
                 drawFixationCross();
                 lastPhase = currentPhase;
-                needsTextureUpload = true; // Signal the VR loop to perform its data transfer
             }
         }
 
-        // --- Hardware Execution Ticks ---
         function loop(timestamp) {
             if (xrSession) return; 
             updateStimulusState(timestamp);
             animId = requestAnimationFrame(loop);
         }
 
+        // --- VR Render Loop ---
         function xrLoop(timestamp, frame) {
             if (!xrSession) return;
             xrSession.requestAnimationFrame(xrLoop);
 
-            updateStimulusState(timestamp);
+            if (!lastTimestamp) lastTimestamp = timestamp;
+            const delta = (timestamp - lastTimestamp) / 1000; lastTimestamp = timestamp;
 
-            // High Efficiency Guard: Only push VRAM data when the 2D canvas has definitively changed
-            if (needsTextureUpload) {
-                gl.bindTexture(gl.TEXTURE_2D, texture);
-                gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
-                needsTextureUpload = false;
+            let currentPhase = -1.0; 
+
+            if (stimulusActivated && !forceBlack) {
+                if (state.playing) {
+                    runningTime += delta;
+                    if (state.len > 0 && runningTime >= state.len) {
+                        xrSession.end(); return;
+                    }
+                }
+                const period = 1 / state.freq;
+                const timeInPeriod = runningTime % period;
+                const dutyBoundary = (state.duty / 100) * period;
+                currentPhase = (timeInPeriod < dutyBoundary) ? 0.0 : 1.0;
             }
 
             const layer = xrSession.renderState.baseLayer;
@@ -508,24 +520,37 @@
             const posAttr = gl.getAttribLocation(shaderProgram, 'aPos'); gl.enableVertexAttribArray(posAttr);
             gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer); gl.vertexAttribPointer(posAttr, 2, gl.FLOAT, false, 0, 0);
 
-            const texAttr = gl.getAttribLocation(shaderProgram, 'aTex'); gl.enableVertexAttribArray(texAttr);
-            gl.bindBuffer(gl.ARRAY_BUFFER, texCoordBuffer); gl.vertexAttribPointer(texAttr, 2, gl.FLOAT, false, 0, 0);
+            // Generate a random vector offset. This instantly randomizes the noise frame with zero mathematical overhead.
+            const randomOffsetX = Math.random();
+            const randomOffsetY = Math.random();
+
+            gl.uniform2f(gl.getUniformLocation(shaderProgram, 'uResolution'), layer.framebufferWidth, layer.framebufferHeight);
+            gl.uniform1f(gl.getUniformLocation(shaderProgram, 'uPhase'), currentPhase);
+            gl.uniform2f(gl.getUniformLocation(shaderProgram, 'uNoiseOffset'), randomOffsetX, randomOffsetY);
+            
+            const rgb1 = hexToRgb(state.c1); const rgb2 = hexToRgb(state.c2);
+            gl.uniform3f(gl.getUniformLocation(shaderProgram, 'uColor1'), rgb1[0], rgb1[1], rgb1[2]);
+            gl.uniform3f(gl.getUniformLocation(shaderProgram, 'uColor2'), rgb2[0], rgb2[1], rgb2[2]);
+            
+            gl.uniform1f(gl.getUniformLocation(shaderProgram, 'uNs1'), state.ns1 ? 1.0 : 0.0); gl.uniform1f(gl.getUniformLocation(shaderProgram, 'uNa1'), state.na1);
+            gl.uniform1f(gl.getUniformLocation(shaderProgram, 'uNs2'), state.ns2 ? 1.0 : 0.0); gl.uniform1f(gl.getUniformLocation(shaderProgram, 'uNa2'), state.na2);
+            gl.uniform1f(gl.getUniformLocation(shaderProgram, 'uNRes'), state.nres);
+
+            gl.uniform1f(gl.getUniformLocation(shaderProgram, 'uFixActive'), state.fc ? 1.0 : 0.0);
+            if (state.fc) {
+                const rgbF = hexToRgb(state.fcc);
+                gl.uniform3f(gl.getUniformLocation(shaderProgram, 'uFixColor'), rgbF[0], rgbF[1], rgbF[2]);
+                gl.uniform1f(gl.getUniformLocation(shaderProgram, 'uFixSize'), state.fcs);
+            }
+
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_2D, webglNoiseTexture);
+            gl.uniform1i(gl.getUniformLocation(shaderProgram, 'uNoiseTile'), 0);
 
             gl.drawArrays(gl.TRIANGLES, 0, 6);
         }
 
-        function stepFrame(direction) {
-            state.playing = false; updateUiFromState();
-            const period = 1 / state.freq; const stepShift = (period / 2) * direction;
-            runningTime = (runningTime + stepShift + 10000) % 10000; 
-            
-            if (cachedFrames1.length > 0 && cachedFrames2.length > 0) {
-                if (direction > 0) { activeIndex1 = (activeIndex1 + 1) % cachedFrames1.length; activeIndex2 = (activeIndex2 + 1) % cachedFrames2.length; } 
-                else { activeIndex1 = (activeIndex1 - 1 + cachedFrames1.length) % cachedFrames1.length; activeIndex2 = (activeIndex2 - 1 + cachedFrames2.length) % cachedFrames2.length; }
-            }
-            lastPhase = -1; 
-        }
-
+        // --- Event Routing ---
         function generateCustomShareUrl() {
             const targetLen = parseInt(document.getElementById('genLen').value, 10) || 0;
             const targetPause = document.getElementById('genPause').checked;
@@ -537,7 +562,6 @@
             
             if (state.ns1) { params.set('ns1', '1'); params.set('na1', state.na1); }
             if (state.ns2) { params.set('ns2', '1'); params.set('na2', state.na2); }
-            params.set('cache', state.cacheSize);
             
             if (state.fc) { params.set('fc', '1'); params.set('fcc', state.fcc.replace('#', '')); params.set('fcs', state.fcs); }
             
@@ -546,29 +570,14 @@
             return `${window.location.origin}${window.location.pathname}?${params.toString()}`;
         }
 
-        // --- Event Routing ---
         uiHeader.addEventListener('click', () => {
             if (state.ui === 'invisible') return;
             state.ui = (state.ui === 'expanded') ? 'collapsed' : 'expanded'; updateUiFromState();
         });
 
         form.addEventListener('click', (e) => e.stopPropagation());
-        
-        form.addEventListener('change', () => {
-            const oldRes = state.nres; const oldNType = state.ntype; const oldC1 = state.c1; const oldC2 = state.c2;
-            const oldNs1 = state.ns1; const oldNs2 = state.ns2; const oldNa1 = state.na1; const oldNa2 = state.na2; const oldCacheSize = state.cacheSize;
-
-            updateStateFromUi();
-
-            if (oldRes !== state.nres || oldNType !== state.ntype || oldC1 !== state.c1 || oldC2 !== state.c2 || oldNs1 !== state.ns1 || oldNs2 !== state.ns2 || oldNa1 !== state.na1 || oldNa2 !== state.na2) {
-                synchronizeNoiseCache(true); 
-            } else if (oldCacheSize !== state.cacheSize) { synchronizeNoiseCache(false); } else { lastPhase = -1; }
-        });
-
-        rebuildCacheBtn.addEventListener('click', () => synchronizeNoiseCache(true));
+        form.addEventListener('change', updateStateFromUi);
         playPauseBtn.addEventListener('click', () => { state.playing = !state.playing; playPauseBtn.textContent = state.playing ? 'PAUSE' : 'PLAY'; });
-        nextFrameBtn.addEventListener('click', () => stepFrame(1));
-        prevFrameBtn.addEventListener('click', () => stepFrame(-1));
 
         shareBtn.addEventListener('click', () => {
             const link = generateCustomShareUrl();
@@ -581,15 +590,11 @@
         window.addEventListener('keydown', (e) => {
             if (e.key === ' ') { e.preventDefault(); state.playing = !state.playing; playPauseBtn.textContent = state.playing ? 'PAUSE' : 'PLAY'; }
             if (e.key === 'h' || e.key === 'H') { state.ui = (state.ui === 'invisible') ? 'collapsed' : 'invisible'; updateUiFromState(); }
-            if (e.key === 'ArrowRight') { e.preventDefault(); stepFrame(1); }
-            if (e.key === 'ArrowLeft') { e.preventDefault(); stepFrame(-1); }
         });
-
-        window.addEventListener('resize', () => synchronizeNoiseCache(true));
 
         // --- Launch ---
         loadUrlParameters();
-        synchronizeNoiseCache(true);
+        rebuildMasterNoiseTile(); // Generates the 512x512 tile exactly once on startup
         initXR();
         animId = requestAnimationFrame(loop);
     </script>
