@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Strobe Stimulus Engine v6 - VR Optimized</title>
+    <title>Strobe Stimulus Engine v6 - Experimental Framework</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body, html { width: 100%; height: 100%; overflow: hidden; background-color: #000; font-family: monospace; color: #fff; }
@@ -63,9 +63,9 @@
         
         #loading-overlay {
             position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-            background: rgba(0, 0, 0, 0.85); z-index: 5; display: flex;
-            justify-content: center; align-items: center; font-size: 11px; letter-spacing: 2px;
-            pointer-events: none;
+            background: rgba(0, 0, 0, 1.0); z-index: 100; display: flex;
+            flex-direction: column; justify-content: center; align-items: center; 
+            font-size: 11px; letter-spacing: 2px; pointer-events: auto;
         }
         
         .invisible { display: none !important; }
@@ -74,7 +74,8 @@
 <body>
 
     <div id="loading-overlay">
-        <div>LOADING...</div>
+        <div id="status-text">LOADING...</div>
+        <button type="button" id="beginBtn" class="action-btn invisible" style="width: 220px; padding: 12px; margin-top: 15px; letter-spacing: 1px; border-color: #444;">BEGIN STIMULUS</button>
     </div>
 
     <canvas id="stimulusCanvas"></canvas>
@@ -218,7 +219,6 @@
                 return this.lerp(top, bot, this.fade(yf));
             },
             fade(t) { return t * t * t * (t * (t * 6 - 15) + 10); },
-            textSyntaxGuard: true,
             lerp(a, b, t) { return a + t * (b - a); }
         };
         Perlin.init();
@@ -228,7 +228,7 @@
             c1: '#000000', c2: '#ffffff', freq: 7, duty: 50,
             ntype: 'white', nres: 1, ns1: false, na1: 0.2, ns2: false, na2: 0.2,
             cacheSize: 30, fc: false, fcc: '#ff0000', fcs: 15,
-            ui: 'collapsed', len: 0, playing: true
+            ui: 'collapsed', len: 0, playing: false // Stays false until onboarding passes
         };
 
         let cachedFrames1 = [];
@@ -241,13 +241,14 @@
         let runningTime = 0; 
         let animId = null;
         let isCaching = false;
+        let stimulusActivated = false; // Gating variable to force screen block execution
 
-        // --- WebXR Hardware Binding Variables ---
+        // --- WebXR State Variables ---
         let xrSession = null;
         let gl = null;
         let xrRefSpace = null;
+        let xrSupported = false;
         const glCanvas = document.createElement('canvas');
-        let xrButton = null;
         let positionBuffer, texCoordBuffer, shaderProgram, texture;
 
         // --- DOM Hooks ---
@@ -264,6 +265,8 @@
         const prevFrameBtn = document.getElementById('prevFrameBtn');
         const form = document.getElementById('controls-form');
         const loadingOverlay = document.getElementById('loading-overlay');
+        const statusText = document.getElementById('status-text');
+        const beginBtn = document.getElementById('beginBtn');
 
         function loadUrlParameters() {
             const p = new URLSearchParams(window.location.search);
@@ -283,8 +286,9 @@
             if (p.has('fcs')) state.fcs = parseInt(p.get('fcs'), 10);
             if (p.has('ui')) state.ui = p.get('ui');
             if (p.has('len')) state.len = parseInt(p.get('len'), 10);
-            if (p.has('playing')) state.playing = p.get('playing') === '1';
             
+            // Hard rule override: Ignore url string parameter for 'playing' status on page entry execution
+            state.playing = false; 
             updateUiFromState();
         }
 
@@ -318,10 +322,14 @@
                 toggleBtn.textContent = 'COLLAPSE';
             }
 
-            if (isCaching) {
-                loadingOverlay.classList.remove('invisible');
+            // Let overlay visibility states handle loading vs button transitions explicitly
+            if (!isCaching && cachedFrames1.length >= state.cacheSize) {
+                statusText.classList.add('invisible');
+                beginBtn.classList.remove('invisible');
             } else {
-                loadingOverlay.classList.add('invisible');
+                statusText.classList.remove('invisible');
+                beginBtn.classList.add('invisible');
+                loadingOverlay.classList.remove('invisible');
             }
         }
 
@@ -430,61 +438,68 @@
             ctx.stroke();
         }
 
-        // --- WebXR Hardware Hook Setup ---
+        // --- WebXR Hardware Binding Init ---
         function initXR() {
             if ('xr' in navigator) {
                 navigator.xr.isSessionSupported('immersive-vr').then((supported) => {
-                    if (supported) createXRButton();
+                    xrSupported = supported;
+                    updateUiFromState();
                 });
             }
         }
 
-        function createXRButton() {
-            xrButton = document.createElement('button');
-            xrButton.textContent = 'ENTER FULLSCREEN VR';
-            xrButton.className = 'action-btn';
-            Object.assign(xrButton.style, {
-                position: 'absolute', bottom: '24px', left: '50%',
-                transform: 'translateX(-50%)', zIndex: '100',
-                width: '220px', padding: '12px', background: '#000',
-                border: '1px solid #444', color: '#fff', fontFamily: 'monospace',
-                fontSize: '11px', letterSpacing: '1px', cursor: 'pointer'
-            });
-            document.body.appendChild(xrButton);
-            xrButton.addEventListener('click', onXRButtonClick);
-        }
-
-        async function onXRButtonClick() {
-            if (!xrSession) {
+        // Single entry gesture point configuration for experimental consistency
+        beginBtn.addEventListener('click', async () => {
+            if (xrSupported) {
                 gl = glCanvas.getContext('webgl', { xrCompatible: true });
                 initWebGLShaders(gl);
                 navigator.xr.requestSession('immersive-vr', {
                     optionalFeatures: ['local']
-                }).then(onSessionStarted);
+                }).then(onSessionStarted).catch(err => {
+                    console.warn("VR context request rejected, fallback to local frame", err);
+                    startOnboardingSequence();
+                });
             } else {
-                xrSession.end();
+                startOnboardingSequence();
             }
-        }
+        });
 
         function onSessionStarted(session) {
             xrSession = session;
-            xrButton.textContent = 'EXIT VR';
-            uiContainer.classList.add('invisible');
             session.addEventListener('end', onSessionEnded);
             session.updateRenderState({ baseLayer: new XRWebGLLayer(session, gl) });
 
-            // Lock to the absolute orientation of the head viewport tracking framework
             session.requestReferenceSpace('viewer').then((refSpace) => {
                 xrRefSpace = refSpace;
+                startOnboardingSequence();
                 session.requestAnimationFrame(xrLoop);
             });
         }
 
         function onSessionEnded() {
             xrSession = null;
-            xrButton.textContent = 'ENTER FULLSCREEN VR';
-            if (state.ui !== 'invisible') uiContainer.classList.remove('invisible');
+            stimulusActivated = false;
+            state.playing = false;
+            updateUiFromState();
             animId = requestAnimationFrame(loop);
+        }
+
+        function startOnboardingSequence() {
+            loadingOverlay.classList.add('invisible');
+            uiContainer.classList.add('invisible'); 
+            
+            // Lock out execution and force display to draw solid black
+            stimulusActivated = false;
+            state.playing = false;
+
+            // Strict half-second baseline alignment delay 
+            setTimeout(() => {
+                runningTime = 0; // Synchronize duration counter exactly at frame activation mark
+                lastTimestamp = performance.now(); 
+                state.playing = true;
+                stimulusActivated = true; 
+                updateUiFromState();
+            }, 500);
         }
 
         function initWebGLShaders(gl) {
@@ -517,16 +532,27 @@
 
         // --- Core Shared State Engine ---
         function updateStimulusState(timestamp) {
+            // Guard loop: Keep canvas hard-coded to black during initial loading or baseline delays
+            if (!stimulusActivated) {
+                ctx.fillStyle = '#000000';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                return;
+            }
+
             if (!lastTimestamp) lastTimestamp = timestamp;
             const delta = (timestamp - lastTimestamp) / 1000;
             lastTimestamp = timestamp;
 
             if (state.playing) {
                 runningTime += delta;
+                // Enforce time limits strictly relative to exposure start tracking offsets
                 if (state.len > 0 && runningTime >= state.len) {
-                    if (xrSession) xrSession.end();
-                    cancelAnimationFrame(animId);
-                    window.location.href = window.location.origin;
+                    if (xrSession) {
+                        xrSession.end();
+                    } else {
+                        cancelAnimationFrame(animId);
+                        window.location.href = window.location.origin;
+                    }
                     return;
                 }
             }
@@ -571,7 +597,7 @@
             }
         }
 
-        // --- Hardware Output Execution Loops ---
+        // --- Hardware Execution Ticks ---
         function loop(timestamp) {
             if (xrSession) return; 
             updateStimulusState(timestamp);
