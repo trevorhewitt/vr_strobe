@@ -30,6 +30,11 @@
         .add-remove-btns button.remove:hover { background: #d32f2f; }
         .collapsible-content { display: none; }
         .collapsible-content.active { display: block; }
+        
+        .stimulus-section { margin-top: 20px; padding-top: 15px; border-top: 2px solid #444; }
+        .stimulus-section h3 { font-size: 1rem; margin-bottom: 10px; color: #b39ddb; }
+        #btn-copy-link { background: #673ab7; margin-top: 10px; }
+        #btn-copy-link:hover { background: #5e35b1; }
     </style>
 </head>
 <body>
@@ -43,9 +48,37 @@
         <button id="btn-reset">Reset</button>
     </div>
     <div id="controls"></div>
+    
+    <div class="stimulus-section">
+        <h3>Stimulus Export</h3>
+        <div class="control-row">
+            <span>Duration (s, 0 = infinite):</span>
+            <input type="number" id="stimulus-duration" value="5.0" min="0" step="0.5" style="width: 70px;">
+        </div>
+        <button id="btn-copy-link">Generate & Copy Link</button>
+    </div>
 </div>
 
 <script>
+// --- Stimulus Mode Check (Runs Immediately) ---
+const urlParams = new URLSearchParams(window.location.search);
+const stimulusDuration = urlParams.get('stimulus');
+
+if (stimulusDuration !== null) {
+    // Hide the UI to make the canvas full screen
+    document.getElementById('ui-container').style.display = 'none';
+    
+    const duration = parseFloat(stimulusDuration);
+    
+    // If duration > 0, set timeout to redirect. If 0, it skips this and runs infinitely.
+    if (duration > 0) {
+        setTimeout(() => {
+            // Redirect to the homepage of the current domain
+            window.location.href = window.location.origin;
+        }, duration * 1000);
+    }
+}
+
 // --- WebGL Shaders ---
 
 const vsSource = `#version 300 es
@@ -170,7 +203,7 @@ const fsMain = `#version 300 es
             if(u_perlins[i].is_active < 0.5) continue;
             vec2 p = uv - u_perlins[i].pivot;
             float val = noise3D(vec3(p * u_perlins[i].scale, u_perlins[i].z_offset + u_time * u_perlins[i].z_speed));
-            c_u += (val * 2.0 - 1.0) * u_perlins[i].strength; // Normalize 0..1 to -1..1
+            c_u += (val * 2.0 - 1.0) * u_perlins[i].strength; 
         }
 
         // Oscillation & Normalization
@@ -240,10 +273,8 @@ const MAX_INSTANCES = 8;
 const patternBase = {
     active: { val: 1, type: 'hidden' }, strength: { val: 1, min: -2, max: 2, step: 0.1 }, period: { val: 10, min: 0.1, max: 50, step: 0.1 }, speed: { val: 2, min: -10, max: 10, step: 0.1 },
     pivotX: { val: 0, min: -2, max: 2, step: 0.01 }, pivotY: { val: 0, min: -2, max: 2, step: 0.01 },
-    // Spatial Noise Distortions
     distortFreq: { val: 1, min: 0, max: 20, step: 0.1 }, distortAmp: { val: 0, min: 0, max: 5, step: 0.01 }, distortSpeed: { val: 1, min: -10, max: 10, step: 0.1 }, distMultPar: { val: 1, min: 0, max: 5, step: 0.1 }, distMultOrth: { val: 1, min: 0, max: 5, step: 0.1 },
-    // Transverse Wave Distortions
-    waveFreq: { val: 2, min: 0, max: 20, step: 0.1 }, waveAmp: { val: 0, min: 0, max: 5, step: 0.01 }, waveShape: { val: 0, min: 0, max: 1, step: 0.01 } // 0 = Sine, 1 = Zigzag
+    waveFreq: { val: 2, min: 0, max: 20, step: 0.1 }, waveAmp: { val: 0, min: 0, max: 5, step: 0.01 }, waveShape: { val: 0, min: 0, max: 1, step: 0.01 } 
 };
 
 const stripeTemplate = () => ({ ...patternBase, angle: { val: 0, min: 0, max: 6.28, step: 0.01 }, rotSpeed: { val: 0, min: -2, max: 2, step: 0.01 }, extent: { val: 0, min: 0, max: 20, step: 1 } });
@@ -294,7 +325,7 @@ function loadStateVals(v) {
     const loadArr = (arrState, arrVals, template) => {
         arrState.length = 0; 
         if(arrVals) arrVals.forEach(valObj => {
-            let temp = template(); // New parameters automatically get safe defaults here!
+            let temp = template(); 
             for(let k in valObj) if(temp[k]) temp[k].val = valObj[k];
             arrState.push(temp);
         });
@@ -305,7 +336,11 @@ function loadStateVals(v) {
     loadArr(state.perlins, v.n, perlinTemplate);
 }
 
-function updateURL() { history.replaceState(null, '', '#' + btoa(JSON.stringify(getStateVals()))); }
+function updateURL() { 
+    if(!stimulusDuration) {
+        history.replaceState(null, '', '#' + btoa(JSON.stringify(getStateVals()))); 
+    }
+}
 function initFromURL() { if(window.location.hash) { try { loadStateVals(JSON.parse(atob(window.location.hash.slice(1)))); } catch(e) {} } else { updateURL(); } }
 
 // --- UI Generation ---
@@ -320,7 +355,7 @@ function createUI() {
         sec.appendChild(h2);
         const content = document.createElement('div');
         content.className = 'collapsible-content';
-        if(!isArray) content.classList.add('active'); // keep main settings open
+        if(!isArray) content.classList.add('active'); 
         h2.onclick = () => content.classList.toggle('active');
 
         if (isArray) {
@@ -398,27 +433,41 @@ document.getElementById('btn-randomise').onclick = () => {
                 prop.val = Math.random() > 0.8 ? 1 : 0; 
             } else if (prop.type !== 'hidden' && prop.type !== 'select') {
                 let r = prop.min + Math.random() * (prop.max - prop.min);
-                
-                // Smart Constraints to keep it visually coherent
                 if (category === 'postProcessing' && ['blurRadius', 'glowStrength', 'trailAmount'].includes(key)) r = Math.random() > 0.85 ? r : 0;
                 if (category === 'global' && ['shearX', 'shearY', 'shakeAmp'].includes(key)) r = Math.random() > 0.85 ? r : 0;
                 if (key === 'scale') r = Math.random() > 0.15 ? 0.5 + Math.random() * 4.5 : r;
                 if (category === 'effects' && ['vigEdge', 'vigCenter'].includes(key)) r = Math.random() > 0.85 ? r : prop.max;
                 if (key === 'extent') r = Math.random() > 0.85 ? r : 0;
-                // Keep distortions subtle by default
                 if (['distortAmp', 'waveAmp'].includes(key)) r = Math.random() > 0.7 ? Math.random() * 2.0 : 0;
-
                 prop.val = prop.step >= 1 ? Math.round(r) : parseFloat(r.toFixed(3));
             }
         }
     }
-    
     randomizeObj(state.global, 'global'); randomizeObj(state.effects, 'effects'); 
     randomizeObj(state.colorAnim, 'anim'); randomizeObj(state.postProcessing, 'postProcessing'); 
     state.stripes.forEach(s => randomizeObj(s, 'pattern')); state.ripples.forEach(r => randomizeObj(r, 'pattern')); 
     state.rays.forEach(ry => randomizeObj(ry, 'pattern')); state.perlins.forEach(pn => randomizeObj(pn, 'pattern'));
-    
     updateURL(); createUI();
+};
+
+document.getElementById('btn-copy-link').onclick = () => {
+    const duration = document.getElementById('stimulus-duration').value;
+    const baseUrl = window.location.origin + window.location.pathname;
+    const hash = window.location.hash;
+    const stimulusUrl = `${baseUrl}?stimulus=${duration}${hash}`;
+    
+    navigator.clipboard.writeText(stimulusUrl).then(() => {
+        const btn = document.getElementById('btn-copy-link');
+        const oldText = btn.textContent;
+        btn.textContent = "Copied!";
+        btn.style.background = "#4caf50";
+        setTimeout(() => {
+            btn.textContent = oldText;
+            btn.style.background = "";
+        }, 2000);
+    }).catch(err => {
+        alert("Failed to copy link. Please check clipboard permissions.");
+    });
 };
 
 initFromURL(); createUI();
