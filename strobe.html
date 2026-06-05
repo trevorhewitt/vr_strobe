@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Strobe Stimulus Engine v7 (WebGL)</title>
+    <title>Strobe Stimulus Engine v6</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body, html { width: 100%; height: 100%; overflow: hidden; background-color: #000; font-family: monospace; color: #fff; }
@@ -61,27 +61,20 @@
         
         .gen-section { background: #050505; border: 1px solid #1a1a1a; padding: 6px; margin-top: 6px; }
         
-        /* Modal Launch Layer */
-        #launch-overlay {
+        #loading-overlay {
             position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-            background: #000; z-index: 100; display: flex; flex-direction: column;
-            justify-content: center; align-items: center; font-size: 11px; letter-spacing: 1px;
+            background: rgba(0, 0, 0, 0.85); z-index: 5; display: flex;
+            justify-content: center; align-items: center; font-size: 11px; letter-spacing: 2px;
+            pointer-events: none;
         }
-        #launch-btn {
-            background: #000; border: 1px solid #333; color: #fff; padding: 12px 24px;
-            font-family: monospace; font-size: 11px; cursor: pointer; letter-spacing: 2px; margin-top: 10px;
-        }
-        #launch-btn:hover:not(:disabled) { background: #111; border-color: #fff; }
-        #launch-btn:disabled { color: #444; border-color: #222; cursor: default; }
         
         .invisible { display: none !important; }
     </style>
 </head>
 <body>
 
-    <div id="launch-overlay">
-        <div id="status-text">LOADING...</div>
-        <button id="launch-btn" disabled>BEGIN STIMULUS</button>
+    <div id="loading-overlay">
+        <div>LOADING...</div>
     </div>
 
     <canvas id="stimulusCanvas"></canvas>
@@ -213,7 +206,7 @@
     </div>
 
     <script>
-        // --- Perlin Noise Generator ---
+        // --- Perlin Noise ---
         const Perlin = {
             rands: new Float32Array(256),
             init() { for(let i=0; i<256; i++) this.rands[i] = Math.random(); },
@@ -229,7 +222,7 @@
         };
         Perlin.init();
 
-        // --- Configuration State Matrix ---
+        // --- Core State ---
         const state = {
             c1: '#000000', c2: '#ffffff', freq: 7, duty: 50,
             ntype: 'white', nres: 1, ns1: false, na1: 0.2, ns2: false, na2: 0.2,
@@ -237,9 +230,8 @@
             ui: 'collapsed', len: 0, playing: true
         };
 
-        // --- WebGL Hardware Resource Allocation Arrays ---
-        let cachedTextures1 = [];
-        let cachedTextures2 = [];
+        let cachedFrames1 = [];
+        let cachedFrames2 = [];
         let activeIndex1 = 0;
         let activeIndex2 = 0;
 
@@ -248,10 +240,10 @@
         let runningTime = 0; 
         let animId = null;
         let isCaching = false;
-        let initialLoadComplete = false;
 
-        // --- DOM Bindings ---
+        // --- DOM Hooks ---
         const canvas = document.getElementById('stimulusCanvas');
+        const ctx = canvas.getContext('2d', { alpha: false });
         const uiContainer = document.getElementById('interface-container');
         const uiHeader = document.getElementById('interface-header');
         const panelTitle = document.getElementById('panelTitle');
@@ -260,52 +252,7 @@
         const shareBtn = document.getElementById('shareBtn');
         const rebuildCacheBtn = document.getElementById('rebuildCacheBtn');
         const form = document.getElementById('controls-form');
-        
-        const launchOverlay = document.getElementById('launch-overlay');
-        const statusText = document.getElementById('status-text');
-        const launchBtn = document.getElementById('launch-btn');
-
-        // --- High Performance WebGL Native Core Pipeline Context Initialization ---
-        const gl = canvas.getContext('webgl', { alpha: false, antialias: false, powerPreference: "high-performance" }) || 
-                   canvas.getContext('experimental-webgl', { alpha: false, antialias: false });
-        
-        if (!gl) {
-            alert("Critical Error: WebGL architecture failed initialization. Hardware optimization profiles missing.");
-        }
-
-        // Standard Full-Screen Quad Shader Assembly Pipeline
-        const vsSource = `attribute vec2 pos; ease vec2 vTex; void main() { vTex = pos * 0.5 + 0.5; gl_Position = vec4(pos, 0.0, 1.0); }`;
-        const fsSource = `precision mediump float; uniform sampler2D tex; uniform bool drawCross; uniform vec3 crossCol; uniform vec2 res; uniform float crossSize; varying vec2 vTex; void main() { vec4 base = texture2D(tex, vTex); if(drawCross) { vec2 pix = gl_FragCoord.xy - (res * 0.5); if((abs(pix.x) < crossSize && abs(pix.y) < 1.0) || (abs(pix.y) < crossSize && abs(pix.x) < 1.0)) { base = vec4(crossCol, 1.0); } } gl_FragColor = base; }`;
-
-        function createShader(gl, src, type) {
-            const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
-            return s;
-        }
-        const program = gl.createProgram();
-        gl.attachShader(program, createShader(gl, vsSource, gl.VERTEX_SHADER));
-        gl.attachShader(program, createShader(gl, fsSource, gl.FRAGMENT_SHADER));
-        gl.linkProgram(program);
-        gl.useProgram(program);
-
-        const buffer = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, -1,1, 1,-1, 1,1]), gl.STATIC_DRAW);
-        const posLoc = gl.getAttribLocation(program, "pos");
-        gl.enableVertexAttribArray(posLoc); gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
-
-        // Uniform Layout Offsets
-        const uDrawCross = gl.getUniformLocation(program, "drawCross");
-        const uCrossCol = gl.getUniformLocation(program, "crossCol");
-        const uRes = gl.getUniformLocation(program, "res");
-        const uCrossSize = gl.getUniformLocation(program, "crossSize");
-
-        // --- Utility State Parsers ---
-        function hexToRgbNormalized(hex) {
-            return [
-                parseInt(hex.slice(1, 3), 16) / 255,
-                parseInt(hex.slice(3, 5), 16) / 255,
-                parseInt(hex.slice(5, 7), 16) / 255
-            ];
-        }
+        const loadingOverlay = document.getElementById('loading-overlay');
 
         function loadUrlParameters() {
             const p = new URLSearchParams(window.location.search);
@@ -359,6 +306,12 @@
                 panelTitle.textContent = "CONTROLS";
                 toggleBtn.textContent = 'COLLAPSE';
             }
+
+            if (isCaching) {
+                loadingOverlay.classList.remove('invisible');
+            } else {
+                loadingOverlay.classList.add('invisible');
+            }
         }
 
         function updateStateFromUi() {
@@ -378,32 +331,25 @@
             state.fcs = parseInt(document.getElementById('fcs').value, 10) || 15;
         }
 
-        // --- Incremental Non-Blocking WebGL Asset Texture Compiler ---
         let currentCacheId = 0; 
         function synchronizeNoiseCache(forceCompleteRebuild = false) {
             isCaching = true;
+            updateUiFromState();
             
             if (canvas.width !== window.innerWidth || canvas.height !== window.innerHeight) {
                 canvas.width = window.innerWidth;
                 canvas.height = window.innerHeight;
-                gl.viewport(0, 0, canvas.width, canvas.height);
                 forceCompleteRebuild = true; 
             }
 
             if (forceCompleteRebuild) {
-                // Delete existing WebGL textures from memory structures safely
-                cachedTextures1.forEach(t => gl.deleteTexture(t));
-                cachedTextures2.forEach(t => gl.deleteTexture(t));
-                cachedTextures1 = [];
-                cachedTextures2 = [];
+                cachedFrames1 = [];
+                cachedFrames2 = [];
             }
 
-            if (cachedTextures1.length > state.cacheSize) {
-                for (let i = state.cacheSize; i < cachedTextures1.length; i++) {
-                    gl.deleteTexture(cachedTextures1[i]); gl.deleteTexture(cachedTextures2[i]);
-                }
-                cachedTextures1.length = state.cacheSize;
-                cachedTextures2.length = state.cacheSize;
+            if (cachedFrames1.length > state.cacheSize) {
+                cachedFrames1.length = state.cacheSize;
+                cachedFrames2.length = state.cacheSize;
             }
 
             const myCacheId = ++currentCacheId;
@@ -411,73 +357,79 @@
             function processSlice() {
                 if (myCacheId !== currentCacheId) return; 
 
-                if (cachedTextures1.length >= state.cacheSize) {
+                if (cachedFrames1.length >= state.cacheSize) {
                     isCaching = false;
-                    if (!initialLoadComplete) {
-                        statusText.textContent = "STIMULUS CONFIGURATION COMPILED.";
-                        launchBtn.removeAttribute('disabled');
-                    }
+                    updateUiFromState();
                     return;
                 }
 
-                // Append texture instances directly to WebGL contexts
-                cachedTextures1.push(generateWebGLTexture(state.c1, state.ns1, state.na1));
-                cachedTextures2.push(generateWebGLTexture(state.c2, state.ns2, state.na2));
+                const fCanvas1 = document.createElement('canvas');
+                fCanvas1.width = canvas.width; fCanvas1.height = canvas.height;
+                generateNoisePattern(fCanvas1, fCanvas1.getContext('2d', { alpha: false }), state.c1, state.ns1, state.na1);
+                cachedFrames1.push(fCanvas1);
+
+                const fCanvas2 = document.createElement('canvas');
+                fCanvas2.width = canvas.width; fCanvas2.height = canvas.height;
+                generateNoisePattern(fCanvas2, fCanvas2.getContext('2d', { alpha: false }), state.c2, state.ns2, state.na2);
+                cachedFrames2.push(fCanvas2);
 
                 setTimeout(processSlice, 0);
             }
             processSlice();
         }
 
-        function generateWebGLTexture(baseColorHex, noiseEnabled, noiseAmp) {
-            const tex = gl.createTexture();
-            gl.bindTexture(gl.TEXTURE_2D, tex);
+        function generateNoisePattern(tCanvas, tCtx, baseColorHex, noiseEnabled, noiseAmp) {
+            const w = tCanvas.width;
+            const h = tCanvas.height;
+            tCtx.fillStyle = baseColorHex;
+            tCtx.fillRect(0, 0, w, h);
 
-            const w = canvas.width; const h = canvas.height;
-            const px = state.nres;
-            
-            // Scaled analytical sizing arrays down based on resolution properties
-            const texW = Math.ceil(w / px); const texH = Math.ceil(h / px);
-            const data = new Uint8Array(texW * texH * 3);
+            if (!noiseEnabled || noiseAmp <= 0) return;
 
             const rBase = parseInt(baseColorHex.slice(1, 3), 16);
             const gBase = parseInt(baseColorHex.slice(3, 5), 16);
             const bBase = parseInt(baseColorHex.slice(5, 7), 16);
+            const px = state.nres;
             const isPerlin = state.ntype === 'perlin';
 
-            let idx = 0;
-            for (let y = 0; y < texH; y++) {
-                for (let x = 0; x < texW; x++) {
-                    let noiseVal = 0;
-                    if (noiseEnabled && noiseAmp > 0) {
-                        noiseVal = isPerlin ? (Perlin.noise(x * px * 0.05, y * px * 0.05) * 2.0 - 1.0) : (Math.random() * 2.0 - 1.0);
-                    }
+            for (let x = 0; x < w; x += px) {
+                for (let y = 0; y < h; y += px) {
+                    let noiseVal = isPerlin ? (Perlin.noise(x * 0.05, y * 0.05) * 2.0 - 1.0) : (Math.random() * 2.0 - 1.0);
                     const factor = noiseVal * noiseAmp;
-                    data[idx]   = Math.min(255, Math.max(0, rBase + factor * 255));
-                    data[idx+1] = Math.min(255, Math.max(0, gBase + factor * 255));
-                    data[idx+2] = Math.min(255, Math.max(0, bBase + factor * 255));
-                    idx += 3;
+                    const r = Math.min(255, Math.max(0, rBase + factor * 255));
+                    const g = Math.min(255, Math.max(0, gBase + factor * 255));
+                    const b = Math.min(255, Math.max(0, bBase + factor * 255));
+
+                    tCtx.fillStyle = `rgb(${Math.floor(r)},${Math.floor(g)},${Math.floor(b)})`;
+                    tCtx.fillRect(x, y, px, px);
                 }
             }
-
-            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, texW, texH, 0, gl.RGB, gl.UNSIGNED_BYTE, data);
-            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-
-            return tex;
         }
 
-        // --- Core Execution Loop (WebGL Blitting Pass) ---
+        function drawFixationCross() {
+            if (!state.fc) return;
+            const cx = canvas.width / 2;
+            const cy = canvas.height / 2;
+            const size = state.fcs;
+            ctx.strokeStyle = state.fcc;
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(cx - size, cy); ctx.lineTo(cx + size, cy);
+            ctx.moveTo(cx, cy - size); ctx.lineTo(cx, cy + size);
+            ctx.stroke();
+        }
+
+        // --- Core Timing Loop ---
         function loop(timestamp) {
             if (!lastTimestamp) lastTimestamp = timestamp;
             const delta = (timestamp - lastTimestamp) / 1000;
             lastTimestamp = timestamp;
 
-            if (state.playing && initialLoadComplete) {
+            // CRITICAL FIX: Accumulate running duration ONLY when the stimulus is unpaused/playing
+            if (state.playing) {
                 runningTime += delta;
 
+                // Enforce time boundary triggers directly against actual active exposure time
                 if (state.len > 0 && runningTime >= state.len) {
                     cancelAnimationFrame(animId);
                     window.location.href = window.location.origin;
@@ -490,49 +442,40 @@
             const dutyBoundary = (state.duty / 100) * period;
             const currentPhase = (timeInPeriod < dutyBoundary) ? 0 : 1;
 
-            const tAvailable1 = cachedTextures1.length > 0;
-            const tAvailable2 = cachedTextures2.length > 0;
-            
-            let activeTex = null;
+            const frameAvailable1 = cachedFrames1.length > 0;
+            const frameAvailable2 = cachedFrames2.length > 0;
 
-            if (state.playing && initialLoadComplete) {
+            if (state.playing) {
                 if (currentPhase !== lastPhase) {
                     if (currentPhase === 0) {
-                        if (tAvailable1) {
-                            activeIndex1 = (activeIndex1 + 1) % cachedTextures1.length;
-                            activeTex = cachedTextures1[activeIndex1];
+                        if (frameAvailable1) {
+                            activeIndex1 = (activeIndex1 + 1) % cachedFrames1.length;
+                            ctx.drawImage(cachedFrames1[activeIndex1], 0, 0);
+                        } else {
+                            ctx.fillStyle = state.c1; ctx.fillRect(0, 0, canvas.width, canvas.height);
                         }
                     } else {
-                        if (tAvailable2) {
-                            activeIndex2 = (activeIndex2 + 1) % cachedTextures2.length;
-                            activeTex = cachedTextures2[activeIndex2];
+                        if (frameAvailable2) {
+                            activeIndex2 = (activeIndex2 + 1) % cachedFrames2.length;
+                            ctx.drawImage(cachedFrames2[activeIndex2], 0, 0);
+                        } else {
+                            ctx.fillStyle = state.c2; ctx.fillRect(0, 0, canvas.width, canvas.height);
                         }
                     }
                     lastPhase = currentPhase;
-                } else {
-                    activeTex = (currentPhase === 0) ? cachedTextures1[activeIndex1] : cachedTextures2[activeIndex2];
+                    drawFixationCross();
                 }
             } else {
-                if (currentPhase === 0) activeTex = tAvailable1 ? cachedTextures1[activeIndex1 % cachedTextures1.length] : null;
-                else activeTex = tAvailable2 ? cachedTextures2[activeIndex2 % cachedTextures2.length] : null;
+                if (currentPhase === 0) {
+                    if (frameAvailable1) ctx.drawImage(cachedFrames1[activeIndex1 % cachedFrames1.length], 0, 0);
+                    else { ctx.fillStyle = state.c1; ctx.fillRect(0, 0, canvas.width, canvas.height); }
+                } else {
+                    if (frameAvailable2) ctx.drawImage(cachedFrames2[activeIndex2 % cachedFrames2.length], 0, 0);
+                    else { ctx.fillStyle = state.c2; ctx.fillRect(0, 0, canvas.width, canvas.height); }
+                }
+                drawFixationCross();
             }
 
-            // Execute Hardware Rasterization Pass
-            gl.clear(gl.COLOR_BUFFER_BIT);
-            if (activeTex) {
-                gl.bindTexture(gl.TEXTURE_2D, activeTex);
-            }
-
-            // Inject Fragment Uniform Directives for crosshair calculations
-            gl.uniform1i(uDrawCross, state.fc ? 1 : 0);
-            if (state.fc) {
-                const nCol = hexToRgbNormalized(state.fcc);
-                gl.uniform3f(uCrossCol, nCol[0], nCol[1], nCol[2]);
-                gl.uniform2f(uRes, canvas.width, canvas.height);
-                gl.uniform1f(uCrossSize, state.fcs);
-            }
-
-            gl.drawArrays(gl.TRIANGLES, 0, 6);
             animId = requestAnimationFrame(loop);
         }
 
@@ -544,13 +487,13 @@
             const stepShift = (period / 2) * direction;
             runningTime = (runningTime + stepShift + 10000) % 10000; 
             
-            if (cachedTextures1.length > 0 && cachedTextures2.length > 0) {
+            if (cachedFrames1.length > 0 && cachedFrames2.length > 0) {
                 if (direction > 0) {
-                    activeIndex1 = (activeIndex1 + 1) % cachedTextures1.length;
-                    activeIndex2 = (activeIndex2 + 1) % cachedTextures2.length;
+                    activeIndex1 = (activeIndex1 + 1) % cachedFrames1.length;
+                    activeIndex2 = (activeIndex2 + 1) % cachedFrames2.length;
                 } else {
-                    activeIndex1 = (activeIndex1 - 1 + cachedTextures1.length) % cachedTextures1.length;
-                    activeIndex2 = (activeIndex2 - 1 + cachedTextures2.length) % cachedTextures2.length;
+                    activeIndex1 = (activeIndex1 - 1 + cachedFrames1.length) % cachedFrames1.length;
+                    activeIndex2 = (activeIndex2 - 1 + cachedFrames2.length) % cachedFrames2.length;
                 }
             }
             lastPhase = -1; 
@@ -587,15 +530,7 @@
             return `${window.location.origin}${window.location.pathname}?${params.toString()}`;
         }
 
-        // --- Interaction Event Triggers ---
-        launchBtn.addEventListener('click', () => {
-            initialLoadComplete = true;
-            launchOverlay.classList.add('invisible');
-            // Sync running timestamp exactly upon interaction boundary block to protect timing variables
-            lastTimestamp = performance.now();
-            updateUiFromState();
-        });
-
+        // --- Event Routing ---
         uiHeader.addEventListener('click', () => {
             if (state.ui === 'invisible') return;
             state.ui = (state.ui === 'expanded') ? 'collapsed' : 'expanded';
@@ -639,14 +574,10 @@
                 const origText = shareBtn.textContent;
                 shareBtn.textContent = 'COPIED LINK TO CLIPBOARD!';
                 setTimeout(() => shareBtn.textContent = origText, 1500);
-            }).catch(err => console.error('Clipboard injection failure: ', err));
+            }).catch(err => console.error('Clipboard execution failure: ', err));
         });
 
         window.addEventListener('keydown', (e) => {
-            if (!initialLoadComplete) {
-                if (e.key === 'Enter' && !launchBtn.hasAttribute('disabled')) launchBtn.click();
-                return;
-            }
             if (e.key === ' ') { 
                 e.preventDefault(); 
                 state.playing = !state.playing;
@@ -662,7 +593,7 @@
 
         window.addEventListener('resize', () => synchronizeNoiseCache(true));
 
-        // --- Core Startup Order ---
+        // --- Launch ---
         loadUrlParameters();
         synchronizeNoiseCache(true);
         animId = requestAnimationFrame(loop);
