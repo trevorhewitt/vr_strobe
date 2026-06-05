@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Strobe Stimulus Engine v5</title>
+    <title>Strobe Stimulus Engine v6</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body, html { width: 100%; height: 100%; overflow: hidden; background-color: #000; font-family: monospace; color: #fff; }
@@ -61,12 +61,11 @@
         
         .gen-section { background: #050505; border: 1px solid #1a1a1a; padding: 6px; margin-top: 6px; }
         
-        /* Non-interactive transparent loading layer */
         #loading-overlay {
             position: absolute; top: 0; left: 0; width: 100%; height: 100%;
             background: rgba(0, 0, 0, 0.85); z-index: 5; display: flex;
             justify-content: center; align-items: center; font-size: 11px; letter-spacing: 2px;
-            pointer-events: none; /* Allows click-through directly to the interface parameters behind it */
+            pointer-events: none;
         }
         
         .invisible { display: none !important; }
@@ -308,7 +307,6 @@
                 toggleBtn.textContent = 'COLLAPSE';
             }
 
-            // Control overlay visibility state independently of structural interaction blocks
             if (isCaching) {
                 loadingOverlay.classList.remove('invisible');
             } else {
@@ -421,19 +419,22 @@
             ctx.stroke();
         }
 
+        // --- Core Timing Loop ---
         function loop(timestamp) {
             if (!lastTimestamp) lastTimestamp = timestamp;
             const delta = (timestamp - lastTimestamp) / 1000;
             lastTimestamp = timestamp;
 
+            // CRITICAL FIX: Accumulate running duration ONLY when the stimulus is unpaused/playing
             if (state.playing) {
                 runningTime += delta;
-            }
 
-            if (state.len > 0 && runningTime >= state.len) {
-                cancelAnimationFrame(animId);
-                window.location.href = window.location.origin;
-                return;
+                // Enforce time boundary triggers directly against actual active exposure time
+                if (state.len > 0 && runningTime >= state.len) {
+                    cancelAnimationFrame(animId);
+                    window.location.href = window.location.origin;
+                    return;
+                }
             }
 
             const period = 1 / state.freq;
