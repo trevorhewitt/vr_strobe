@@ -35,9 +35,32 @@
         .stimulus-section h3 { font-size: 1rem; margin-bottom: 10px; color: #b39ddb; }
         #btn-copy-link { background: #673ab7; margin-top: 10px; }
         #btn-copy-link:hover { background: #5e35b1; }
+
+        /* Participant Gating Overlays */
+        #participant-overlay, #completion-overlay {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: #000; z-index: 100; display: flex;
+            flex-direction: column; justify-content: center; align-items: center; 
+        }
+        #completion-overlay { z-index: 150; }
+        .action-btn-large {
+            background: #000; border: 1px solid #444; color: #fff; padding: 12px;
+            font-family: monospace; font-size: 11px; cursor: pointer; text-transform: uppercase;
+            width: 220px; letter-spacing: 1px; border-radius: 0; font-weight: normal;
+        }
+        .action-btn-large:hover { background: #111; border-color: #555; }
+        .invisible { display: none !important; }
     </style>
 </head>
 <body>
+
+<div id="participant-overlay" class="invisible">
+    <button type="button" id="beginBtn" class="action-btn-large">BEGIN STIMULUS</button>
+</div>
+
+<div id="completion-overlay" class="invisible">
+    <button type="button" id="goBackBtn" class="action-btn-large">GO BACK</button>
+</div>
 
 <div id="canvas-container"><canvas id="glcanvas"></canvas></div>
 
@@ -60,27 +83,45 @@
 </div>
 
 <script>
-// --- Stimulus Mode Check (Runs Immediately) ---
-const urlParams = new URLSearchParams(window.location.search);
-const stimulusDuration = urlParams.get('stimulus');
+// --- State & Routing Initialization ---
+let isParticipantMode = false;
+let stimulusDuration = 0;
+let stimulusActivated = true; // True for experimenters immediately
+let isPlaying = true;
+let forceBlack = false;
 
-if (stimulusDuration !== null) {
-    // Hide the UI to make the canvas full screen
-    document.getElementById('ui-container').style.display = 'none';
-    
-    const duration = parseFloat(stimulusDuration);
-    
-    // If duration > 0, set timeout to redirect. If 0, it skips this and runs infinitely.
-    if (duration > 0) {
-        setTimeout(() => {
-            // Redirect to the homepage of the current domain
-            window.location.href = window.location.origin;
-        }, duration * 1000);
-    }
+const urlParams = new URLSearchParams(window.location.search);
+const stimParam = urlParams.get('stimulus');
+
+if (stimParam !== null) {
+    isParticipantMode = true;
+    stimulusDuration = parseFloat(stimParam);
+    document.getElementById('ui-container').classList.add('invisible');
+    document.getElementById('participant-overlay').classList.remove('invisible');
+    stimulusActivated = false;
+    isPlaying = false;
 }
 
-// --- WebGL Shaders ---
+document.getElementById('beginBtn').addEventListener('click', () => {
+    document.getElementById('participant-overlay').classList.add('invisible');
+    forceBlack = true;
+    
+    // Strict half-second baseline alignment delay
+    setTimeout(() => {
+        forceBlack = false;
+        activeTime = 0; // Sync animation timeline exactly to start
+        lastTime = performance.now();
+        isPlaying = true;
+        stimulusActivated = true;
+    }, 500);
+});
 
+document.getElementById('goBackBtn').addEventListener('click', () => {
+    window.location.href = '/index.html'; 
+});
+
+
+// --- WebGL Shaders ---
 const vsSource = `#version 300 es
     in vec4 a_position;
     out vec2 v_uv;
@@ -337,7 +378,7 @@ function loadStateVals(v) {
 }
 
 function updateURL() { 
-    if(!stimulusDuration) {
+    if(!isParticipantMode) {
         history.replaceState(null, '', '#' + btoa(JSON.stringify(getStateVals()))); 
     }
 }
@@ -513,20 +554,46 @@ function set1i(prog, name, val) { gl.uniform1i(gl.getUniformLocation(prog, name)
 function set2f(prog, name, x, y) { gl.uniform2f(gl.getUniformLocation(prog, name), x, y); }
 function set3f(prog, name, x, y, z) { gl.uniform3f(gl.getUniformLocation(prog, name), x, y, z); }
 
-let startTime = performance.now();
+let activeTime = 0;
+let lastTime = performance.now();
 
 function render() {
+    const now = performance.now();
+    const delta = (now - lastTime) / 1000.0;
+    lastTime = now;
+
     const rect = canvas.parentNode.getBoundingClientRect();
     if (canvas.width !== rect.width || canvas.height !== rect.height) {
         canvas.width = rect.width; canvas.height = rect.height; w = canvas.width; h = canvas.height;
         mainFBO = createFBO(w, h); trailReadFBO = createFBO(w, h); trailWriteFBO = createFBO(w, h);
     }
-    const time = (performance.now() - startTime) * 0.001;
+
+    // Handle Participant Blackout Screens
+    if (forceBlack || !stimulusActivated) {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        gl.viewport(0, 0, w, h);
+        gl.clearColor(0.0, 0.0, 0.0, 1.0);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+        requestAnimationFrame(render);
+        return;
+    }
+
+    // Progress time sequence
+    if (isPlaying) {
+        activeTime += delta;
+        if (isParticipantMode && stimulusDuration > 0 && activeTime >= stimulusDuration) {
+            isPlaying = false;
+            stimulusActivated = false;
+            document.getElementById('completion-overlay').classList.remove('invisible');
+            requestAnimationFrame(render);
+            return;
+        }
+    }
 
     // --- Pass 1: Render Main Interference ---
     gl.useProgram(progMain); gl.bindFramebuffer(gl.FRAMEBUFFER, mainFBO.fbo); gl.viewport(0, 0, w, h); setupQuad(progMain);
 
-    set2f(progMain, "u_resolution", w, h); set1f(progMain, "u_time", time);
+    set2f(progMain, "u_resolution", w, h); set1f(progMain, "u_time", activeTime);
     set1i(progMain, "u_colorCount", state.colors.colorCount.val);
     set3f(progMain, "u_color1", ...hexToRGB(state.colors.col1.val)); set3f(progMain, "u_color2", ...hexToRGB(state.colors.col2.val)); set3f(progMain, "u_color3", ...hexToRGB(state.colors.col3.val));
     set1f(progMain, "u_oscActive", state.colorAnim.oscActive.val); set1f(progMain, "u_oscFreq", state.colorAnim.oscFreq.val); set1f(progMain, "u_oscShape", state.colorAnim.oscShape.val);
@@ -552,7 +619,7 @@ function render() {
     // --- Pass 3: Screen Post-Processing ---
     gl.useProgram(progPost); gl.bindFramebuffer(gl.FRAMEBUFFER, null); setupQuad(progPost);
     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, trailWriteFBO.tex); set1i(progPost, "u_image", 0);
-    set2f(progPost, "u_res", w, h); set1f(progPost, "u_time", time);
+    set2f(progPost, "u_res", w, h); set1f(progPost, "u_time", activeTime);
     set1f(progPost, "u_blurRadius", state.postProcessing.blurRadius.val); set1f(progPost, "u_glow", state.postProcessing.glowStrength.val); set1f(progPost, "u_brightness", state.postProcessing.brightness.val); set1f(progPost, "u_contrast", state.postProcessing.contrast.val);
     set1f(progPost, "u_noise_freq", state.effects.noiseFreq.val); set1f(progPost, "u_noise_strength", state.effects.noiseStrength.val); set1f(progPost, "u_noise_bias", state.effects.noiseBias.val);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
