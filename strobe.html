@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Strobe Stimulus Engine v6 - Experimental Framework</title>
+    <title>Strobe Stimulus Engine v6 - VR Optimized</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body, html { width: 100%; height: 100%; overflow: hidden; background-color: #000; font-family: monospace; color: #fff; }
@@ -228,7 +228,7 @@
             c1: '#000000', c2: '#ffffff', freq: 7, duty: 50,
             ntype: 'white', nres: 1, ns1: false, na1: 0.2, ns2: false, na2: 0.2,
             cacheSize: 30, fc: false, fcc: '#ff0000', fcs: 15,
-            ui: 'collapsed', len: 0, playing: false // Stays false until onboarding passes
+            ui: 'collapsed', len: 0, playing: false
         };
 
         let cachedFrames1 = [];
@@ -237,19 +237,23 @@
         let activeIndex2 = 0;
 
         let lastPhase = -1;
+        let currentPhaseGlobal = 0; // Tracked for WebGL loop
         let lastTimestamp = null;
         let runningTime = 0; 
         let animId = null;
         let isCaching = false;
-        let stimulusActivated = false; // Gating variable to force screen block execution
+        let stimulusActivated = false; 
 
-        // --- WebXR State Variables ---
+        // --- WebXR VRAM Arrays ---
         let xrSession = null;
         let gl = null;
         let xrRefSpace = null;
         let xrSupported = false;
         const glCanvas = document.createElement('canvas');
-        let positionBuffer, texCoordBuffer, shaderProgram, texture;
+        let positionBuffer, texCoordBuffer, shaderProgram;
+        
+        let xrTextures1 = [];
+        let xrTextures2 = [];
 
         // --- DOM Hooks ---
         const canvas = document.getElementById('stimulusCanvas');
@@ -287,7 +291,6 @@
             if (p.has('ui')) state.ui = p.get('ui');
             if (p.has('len')) state.len = parseInt(p.get('len'), 10);
             
-            // Hard rule override: Ignore url string parameter for 'playing' status on page entry execution
             state.playing = false; 
             updateUiFromState();
         }
@@ -322,7 +325,6 @@
                 toggleBtn.textContent = 'COLLAPSE';
             }
 
-            // Let overlay visibility states handle loading vs button transitions explicitly
             if (!isCaching && cachedFrames1.length >= state.cacheSize) {
                 statusText.classList.add('invisible');
                 beginBtn.classList.remove('invisible');
@@ -448,7 +450,6 @@
             }
         }
 
-        // Single entry gesture point configuration for experimental consistency
         beginBtn.addEventListener('click', async () => {
             if (xrSupported) {
                 gl = glCanvas.getContext('webgl', { xrCompatible: true });
@@ -464,10 +465,47 @@
             }
         });
 
+        // --- Texture Compiler Pipeline ---
+        function createXRTexture(cvs) {
+            let t = gl.createTexture();
+            gl.bindTexture(gl.TEXTURE_2D, t);
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, cvs);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+            // Nearest-neighbor preserves blocky pixel structure of noise/perlin parameters
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+            return t;
+        }
+
+        function createSolidColorXRTexture(hex) {
+            const cvs = document.createElement('canvas');
+            cvs.width = 1; cvs.height = 1;
+            const ctxTemp = cvs.getContext('2d', { alpha: false });
+            ctxTemp.fillStyle = hex;
+            ctxTemp.fillRect(0, 0, 1, 1);
+            return createXRTexture(cvs);
+        }
+
+        function hexToRgb(hex) {
+            return [
+                parseInt(hex.slice(1, 3), 16) / 255.0,
+                parseInt(hex.slice(3, 5), 16) / 255.0,
+                parseInt(hex.slice(5, 7), 16) / 255.0
+            ];
+        }
+
         function onSessionStarted(session) {
             xrSession = session;
             session.addEventListener('end', onSessionEnded);
             session.updateRenderState({ baseLayer: new XRWebGLLayer(session, gl) });
+
+            // Compile arrays directly into GPU memory to prevent runtime bottlenecks
+            xrTextures1.forEach(t => gl.deleteTexture(t));
+            xrTextures2.forEach(t => gl.deleteTexture(t));
+            
+            xrTextures1 = cachedFrames1.length > 0 ? cachedFrames1.map(createXRTexture) : [createSolidColorXRTexture(state.c1)];
+            xrTextures2 = cachedFrames2.length > 0 ? cachedFrames2.map(createXRTexture) : [createSolidColorXRTexture(state.c2)];
 
             session.requestReferenceSpace('viewer').then((refSpace) => {
                 xrRefSpace = refSpace;
@@ -488,13 +526,11 @@
             loadingOverlay.classList.add('invisible');
             uiContainer.classList.add('invisible'); 
             
-            // Lock out execution and force display to draw solid black
             stimulusActivated = false;
             state.playing = false;
 
-            // Strict half-second baseline alignment delay 
             setTimeout(() => {
-                runningTime = 0; // Synchronize duration counter exactly at frame activation mark
+                runningTime = 0; 
                 lastTimestamp = performance.now(); 
                 state.playing = true;
                 stimulusActivated = true; 
@@ -503,8 +539,38 @@
         }
 
         function initWebGLShaders(gl) {
-            const vsSource = `attribute vec2 aPos; attribute vec2 aTex; varying vec2 vTex; void main() { gl_Position = vec4(aPos, 0.0, 1.0); vTex = aTex; }`;
-            const fsSource = `precision mediump float; varying vec2 vTex; uniform sampler2D uSam; void main() { gl_FragColor = texture2D(uSam, vTex); }`;
+            const vsSource = `
+                attribute vec2 aPos; 
+                attribute vec2 aTex; 
+                varying vec2 vTex; 
+                void main() { 
+                    gl_Position = vec4(aPos, 0.0, 1.0); 
+                    vTex = aTex; 
+                }`;
+            
+            // Fragment Shader directly handles Fixation Cross rendering
+            const fsSource = `
+                precision mediump float; 
+                varying vec2 vTex; 
+                uniform sampler2D uSam; 
+                uniform vec2 uResolution;
+                uniform float uFixActive;
+                uniform vec3 uFixColor;
+                uniform float uFixSize;
+
+                void main() { 
+                    vec4 color = texture2D(uSam, vTex); 
+                    
+                    if (uFixActive > 0.5) {
+                        vec2 fragCoord = vTex * uResolution;
+                        vec2 center = uResolution / 2.0;
+                        vec2 diff = abs(fragCoord - center);
+                        if ((diff.x < uFixSize && diff.y < 1.0) || (diff.y < uFixSize && diff.x < 1.0)) {
+                            color = vec4(uFixColor, 1.0);
+                        }
+                    }
+                    gl_FragColor = color; 
+                }`;
 
             const vs = gl.createShader(gl.VERTEX_SHADER);
             gl.shaderSource(vs, vsSource); gl.compileShader(vs);
@@ -522,20 +588,16 @@
             texCoordBuffer = gl.createBuffer();
             gl.bindBuffer(gl.ARRAY_BUFFER, texCoordBuffer);
             gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0,1, 1,1, 0,0, 0,0, 1,1, 1,0]), gl.STATIC_DRAW);
-
-            texture = gl.createTexture();
-            gl.bindTexture(gl.TEXTURE_2D, texture);
-            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
         }
 
         // --- Core Shared State Engine ---
-        function updateStimulusState(timestamp) {
-            // Guard loop: Keep canvas hard-coded to black during initial loading or baseline delays
+        // Added flag 'skip2DDraw' to execute strict timing progression without triggering CPU canvas ops
+        function updateStimulusState(timestamp, skip2DDraw = false) {
             if (!stimulusActivated) {
-                ctx.fillStyle = '#000000';
-                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                if (!skip2DDraw) {
+                    ctx.fillStyle = '#000000';
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+                }
                 return;
             }
 
@@ -545,7 +607,6 @@
 
             if (state.playing) {
                 runningTime += delta;
-                // Enforce time limits strictly relative to exposure start tracking offsets
                 if (state.len > 0 && runningTime >= state.len) {
                     if (xrSession) {
                         xrSession.end();
@@ -561,6 +622,8 @@
             const timeInPeriod = runningTime % period;
             const dutyBoundary = (state.duty / 100) * period;
             const currentPhase = (timeInPeriod < dutyBoundary) ? 0 : 1;
+            
+            currentPhaseGlobal = currentPhase; // Export for WebGL router
 
             const frameAvailable1 = cachedFrames1.length > 0;
             const frameAvailable2 = cachedFrames2.length > 0;
@@ -568,39 +631,39 @@
             if (state.playing) {
                 if (currentPhase !== lastPhase) {
                     if (currentPhase === 0) {
-                        if (frameAvailable1) {
-                            activeIndex1 = (activeIndex1 + 1) % cachedFrames1.length;
-                            ctx.drawImage(cachedFrames1[activeIndex1], 0, 0);
-                        } else {
-                            ctx.fillStyle = state.c1; ctx.fillRect(0, 0, canvas.width, canvas.height);
+                        activeIndex1 = frameAvailable1 ? (activeIndex1 + 1) % cachedFrames1.length : 0;
+                        if (!skip2DDraw) {
+                            if (frameAvailable1) ctx.drawImage(cachedFrames1[activeIndex1], 0, 0);
+                            else { ctx.fillStyle = state.c1; ctx.fillRect(0, 0, canvas.width, canvas.height); }
                         }
                     } else {
-                        if (frameAvailable2) {
-                            activeIndex2 = (activeIndex2 + 1) % cachedFrames2.length;
-                            ctx.drawImage(cachedFrames2[activeIndex2], 0, 0);
-                        } else {
-                            ctx.fillStyle = state.c2; ctx.fillRect(0, 0, canvas.width, canvas.height);
+                        activeIndex2 = frameAvailable2 ? (activeIndex2 + 1) % cachedFrames2.length : 0;
+                        if (!skip2DDraw) {
+                            if (frameAvailable2) ctx.drawImage(cachedFrames2[activeIndex2], 0, 0);
+                            else { ctx.fillStyle = state.c2; ctx.fillRect(0, 0, canvas.width, canvas.height); }
                         }
                     }
                     lastPhase = currentPhase;
-                    drawFixationCross();
+                    if (!skip2DDraw) drawFixationCross();
                 }
             } else {
-                if (currentPhase === 0) {
-                    if (frameAvailable1) ctx.drawImage(cachedFrames1[activeIndex1 % cachedFrames1.length], 0, 0);
-                    else { ctx.fillStyle = state.c1; ctx.fillRect(0, 0, canvas.width, canvas.height); }
-                } else {
-                    if (frameAvailable2) ctx.drawImage(cachedFrames2[activeIndex2 % cachedFrames2.length], 0, 0);
-                    else { ctx.fillStyle = state.c2; ctx.fillRect(0, 0, canvas.width, canvas.height); }
+                if (!skip2DDraw) {
+                    if (currentPhase === 0) {
+                        if (frameAvailable1) ctx.drawImage(cachedFrames1[activeIndex1 % cachedFrames1.length], 0, 0);
+                        else { ctx.fillStyle = state.c1; ctx.fillRect(0, 0, canvas.width, canvas.height); }
+                    } else {
+                        if (frameAvailable2) ctx.drawImage(cachedFrames2[activeIndex2 % cachedFrames2.length], 0, 0);
+                        else { ctx.fillStyle = state.c2; ctx.fillRect(0, 0, canvas.width, canvas.height); }
+                    }
+                    drawFixationCross();
                 }
-                drawFixationCross();
             }
         }
 
         // --- Hardware Execution Ticks ---
         function loop(timestamp) {
             if (xrSession) return; 
-            updateStimulusState(timestamp);
+            updateStimulusState(timestamp, false);
             animId = requestAnimationFrame(loop);
         }
 
@@ -608,10 +671,20 @@
             if (!xrSession) return;
             xrSession.requestAnimationFrame(xrLoop);
 
-            updateStimulusState(timestamp);
+            // Execute time step but strictly forbid 2D canvas manipulations
+            updateStimulusState(timestamp, true);
 
-            gl.bindTexture(gl.TEXTURE_2D, texture);
-            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
+            // Select active VRAM pointer
+            let activeTex;
+            if (!stimulusActivated) {
+                activeTex = xrTextures1[0]; // Baseline block handles darkness
+            } else if (currentPhaseGlobal === 0) {
+                activeTex = xrTextures1[activeIndex1 % xrTextures1.length];
+            } else {
+                activeTex = xrTextures2[activeIndex2 % xrTextures2.length];
+            }
+
+            gl.bindTexture(gl.TEXTURE_2D, activeTex);
 
             const layer = xrSession.renderState.baseLayer;
             gl.bindFramebuffer(gl.FRAMEBUFFER, layer.framebuffer);
@@ -628,6 +701,15 @@
             gl.enableVertexAttribArray(texAttr);
             gl.bindBuffer(gl.ARRAY_BUFFER, texCoordBuffer);
             gl.vertexAttribPointer(texAttr, 2, gl.FLOAT, false, 0, 0);
+
+            // Pass Fixation Parameters directly to Shader
+            gl.uniform2f(gl.getUniformLocation(shaderProgram, 'uResolution'), layer.framebufferWidth, layer.framebufferHeight);
+            gl.uniform1f(gl.getUniformLocation(shaderProgram, 'uFixActive'), state.fc ? 1.0 : 0.0);
+            if (state.fc) {
+                const rgb = hexToRgb(state.fcc);
+                gl.uniform3f(gl.getUniformLocation(shaderProgram, 'uFixColor'), rgb[0], rgb[1], rgb[2]);
+                gl.uniform1f(gl.getUniformLocation(shaderProgram, 'uFixSize'), state.fcs);
+            }
 
             gl.drawArrays(gl.TRIANGLES, 0, 6);
         }
